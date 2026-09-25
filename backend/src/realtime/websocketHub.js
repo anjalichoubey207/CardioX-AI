@@ -392,6 +392,7 @@ export class RealtimeHub {
     };
 
     this.broadcast(`patient:${patientId}`, enrichedFrame);
+    this.broadcastAll(enrichedFrame);
 
     // 5. Periodic Live AI Assessment Broadcast (Every 2.5s)
     if (!this.lastAiEvaluationTime || Date.now() - this.lastAiEvaluationTime > 2500) {
