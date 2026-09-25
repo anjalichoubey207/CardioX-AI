@@ -697,6 +697,13 @@ function handleIncomingTelemetry(frame) {
         onHardwareConnected(frame.deviceId);
       }
     }
+
+    const hasFinger = Boolean(frame.fingerDetected);
+    const hrValue = (hasFinger && frame.heartRate && frame.heartRate >= 40) ? Math.round(frame.heartRate) : (frame.heartRate ? Math.round(frame.heartRate) : null);
+    const spo2Value = (hasFinger && frame.spo2 && frame.spo2 >= 70) ? Math.round(frame.spo2) : null;
+
+    updateVitalsUI(hrValue, spo2Value, hasFinger ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !hasFinger, hasFinger, frame.patientId || 'pat-001');
+    updateEcgHudStatus();
   }
 }
 

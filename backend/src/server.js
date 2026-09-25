@@ -242,6 +242,21 @@ function startHardwareSerialBridge() {
             console.log(`[HARDWARE TELEMETRY] Heartbeat: HR=${parsed.heartRate} SpO2=${parsed.spo2}% Finger=${parsed.fingerDetected}`);
             realtimeHub.broadcast(`device:${parsed.deviceId}`, parsed);
             realtimeHub.broadcastAll(parsed);
+
+            // Forward to dashboard vitals stream
+            realtimeHub.handleEcgFrame({
+              type: 'ECG_FRAME',
+              deviceId: parsed.deviceId || 'DX-ESP8266-001',
+              sessionId: 'sess-001',
+              patientId: realtimeHub.activePatientId || 'pat-001',
+              timestamp: Date.now(),
+              leadsOff: Boolean(parsed.leadsOff),
+              fingerDetected: Boolean(parsed.fingerDetected),
+              heartRate: parsed.heartRate || 0,
+              spo2: parsed.spo2 || 0,
+              signalQuality: parsed.leadsOff ? 'LEADS_OFF' : 'EXCELLENT',
+              samples: []
+            }, true);
           }
         } catch (e) {
           // Ignore non-JSON output
