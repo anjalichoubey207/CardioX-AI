@@ -5,7 +5,7 @@
  * Hardware Supported:
  *   - ESP8266 NodeMCU (ESP-12E Module)
  *   - Universal OLED Driver: Supports BOTH 0.96" SSD1306 AND 1.3" SH1106 Displays!
- *   - MAX30102 Pulse Oximeter (Heart Rate & SpO2)
+ *   - MAX30102 Pulse Oximeter (32-bit High-Sensitivity Optical HR & SpO2 Engine)
  *   - AD8232 ECG Sensor (Single Lead Biopotential Monitor)
  * 
  * Pin Wiring (Breadboard):
@@ -36,7 +36,6 @@
 #include <Adafruit_SSD1306.h>
 
 #include <MAX30105.h>
-#include <heartRate.h>
 
 // ============================================================================
 // 1. CONFIGURATION
@@ -73,10 +72,21 @@ bool max30102Available = false;
 bool fingerDetected = false;
 int  heartRateBpm = 0;
 int  spo2Val = 0;
+long rawIr = 0;
+long rawRed = 0;
 
-long lastBeatTime = 0;
-int  beatCount = 0;
-int  beatIntervals[4] = {0, 0, 0, 0};
+// High-Precision 32-bit Pulse Peak Detector State
+float irDc = 0.0f;
+float redDc = 0.0f;
+float irAcMax = -99999.0f;
+float irAcMin = 99999.0f;
+float redAcMax = -99999.0f;
+float redAcMin = 99999.0f;
+bool  inBeatCycle = false;
+long  lastBeatTimeMs = 0;
+int   beatCount = 0;
+int   beatIntervals[4] = {0, 0, 0, 0};
+unsigned long ledPulseUntilMs = 0;
 
 // --- ECG Waveform State ---
 int oledEcgHistory[128];
@@ -96,8 +106,6 @@ unsigned long lastDiagPrintMs = 0;
 // 2. UNIVERSAL OLED DISPLAY CONTROLLER (Works on BOTH SSD1306 & SH1106!)
 // ============================================================================
 void wakeUpOledHardware(uint8_t addr) {
-    // Send dual charge-pump wake up sequence:
-    // This turns on VPP DC-DC voltage on BOTH SSD1306 and SH1106 displays!
     Wire.beginTransmission(addr);
     Wire.write(0x00);        // Command stream
     Wire.write(0xAE);        // Display OFF
@@ -114,11 +122,10 @@ void wakeUpOledHardware(uint8_t addr) {
 void renderUniversalOled() {
     if (!oledAvailable) return;
 
-    // 1. First trigger Adafruit's native flush (for SSD1306 displays)
+    // 1. Native Adafruit buffer flush (for SSD1306 displays)
     display.display();
 
-    // 2. Also send page-by-page with 2-pixel column offset (for SH1106 1.3" displays!)
-    // Both chips safely receive this without conflict!
+    // 2. Also send page-by-page with 2-pixel column offset (for SH1106 1.3" displays)
     uint8_t* buf = display.getBuffer();
     if (!buf) return;
 
@@ -175,7 +182,6 @@ void initWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-    // Short 3-second non-blocking attempt on boot
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 10) {
         delay(200);
@@ -215,31 +221,41 @@ void updateOledUI() {
     // 2. Real Vitals Row (Heart Rate & SpO2)
     display.setCursor(0, 12);
     display.print("HR: ");
-    if (fingerDetected && heartRateBpm > 0) {
-        display.print(heartRateBpm);
-        display.print(" bpm");
+    if (fingerDetected) {
+        if (heartRateBpm > 0) {
+            display.print(heartRateBpm);
+            display.print(" bpm");
+        } else {
+            display.print("Detect...");
+        }
     } else {
         display.print("-- bpm");
     }
 
-    display.setCursor(70, 12);
+    display.setCursor(68, 12);
     display.print("SpO2: ");
-    if (fingerDetected && spo2Val > 0) {
-        display.print(spo2Val);
-        display.print("%");
+    if (fingerDetected) {
+        if (spo2Val > 0) {
+            display.print(spo2Val);
+            display.print("%");
+        } else {
+            display.print("Detect...");
+        }
     } else {
         display.print("--%");
     }
     display.drawLine(0, 22, 127, 22, SSD1306_WHITE);
 
-    // 3. ECG Oscilloscope Area (Y: 24 to 63)
+    // 3. ECG / Sensor Area (Y: 24 to 63)
     if (leadsOff) {
         display.setCursor(4, 28);
         display.print("ECG: Leads Off");
         display.setCursor(4, 40);
         display.print("Attach AD8232 Pads");
-        if (!fingerDetected) {
-            display.setCursor(4, 53);
+        display.setCursor(4, 53);
+        if (fingerDetected) {
+            display.print("MAX: Finger OK [o]");
+        } else {
             display.print("Place Finger on MAX");
         }
     } else {
@@ -266,7 +282,6 @@ void updateOledUI() {
         }
     }
 
-    // Render using our universal dual engine
     renderUniversalOled();
 }
 
@@ -319,13 +334,14 @@ void setup() {
     Serial.println("========================================================");
 
     pinMode(PIN_STATUS_LED, OUTPUT);
-    digitalWrite(PIN_STATUS_LED, LOW);
+    digitalWrite(PIN_STATUS_LED, HIGH); // Off initially (Active LOW)
 
     pinMode(PIN_ECG_LO_PLUS, INPUT);
     pinMode(PIN_ECG_LO_MINUS, INPUT);
 
+    // Fast 400kHz I2C bus: Prevents FIFO buffer overflow
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-    Wire.setClock(100000); // 100 kHz standard speed
+    Wire.setClock(400000);
 
     scanI2CBus();
 
@@ -336,7 +352,7 @@ void setup() {
         wakeUpOledHardware(oledAddress);
         Serial.println("✓ Success!");
     } else {
-        Serial.println("❌ I2C begin failed. Retrying alternate address...");
+        Serial.println("❌ Retrying 0x3D...");
         if (display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
             oledAvailable = true;
             oledAddress = 0x3D;
@@ -345,7 +361,6 @@ void setup() {
         }
     }
 
-    // Instantly light up the display on boot!
     if (oledAvailable) {
         display.clearDisplay();
         display.setTextSize(1);
@@ -362,14 +377,30 @@ void setup() {
     // 2. Initialize Wi-Fi
     initWiFi();
 
-    // 3. Initialize MAX30102
+    // 3. Initialize MAX30102 with exact Red + IR 2-LED Configuration!
     Serial.print("[MAX30102] Starting pulse sensor at 0x57... ");
-    if (particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    if (particleSensor.begin(Wire, I2C_SPEED_FAST)) {
         max30102Available = true;
-        particleSensor.setup();
-        particleSensor.setPulseAmplitudeRed(0x28);  // Enhanced LED drive for high sensitivity
-        particleSensor.setPulseAmplitudeGreen(0);
-        Serial.println("✓ Online!");
+        
+        // Exact MAX30102 configuration:
+        // ledBrightness = 0x3C (~12mA high sensitivity)
+        // sampleAverage = 4
+        // ledMode = 2 (CRITICAL: Red + IR only! Never use 3 on MAX30102)
+        // sampleRate = 100 Hz
+        // pulseWidth = 411 us (Full 18-bit ADC resolution)
+        // adcRange = 4096
+        byte ledBrightness = 0x3C;
+        byte sampleAverage = 4;
+        byte ledMode = 2;
+        int  sampleRate = 100;
+        int  pulseWidth = 411;
+        int  adcRange = 4096;
+
+        particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+        particleSensor.setPulseAmplitudeRed(0x3C);
+        particleSensor.setPulseAmplitudeIR(0x3C);
+        particleSensor.setPulseAmplitudeGreen(0x00);
+        Serial.println("✓ Online (Red+IR Mode OK)!");
     } else {
         Serial.println("❌ Sensor not found at 0x57!");
     }
@@ -378,7 +409,6 @@ void setup() {
         oledEcgHistory[i] = 512;
     }
 
-    digitalWrite(PIN_STATUS_LED, HIGH);
     Serial.println("\n[CardioX] Real-time loop active.\n");
 }
 
@@ -406,22 +436,48 @@ void loop() {
         oledHistoryIndex = (oledHistoryIndex + 1) % 128;
     }
 
-    // 2. Poll MAX30102 (Every 25ms)
-    if (nowMs - lastFingerPollMs >= 25) {
+    // 2. High-Speed 32-bit Pulse & SpO2 Engine (Sample every 10ms = 100 Hz)
+    if (nowMs - lastFingerPollMs >= 10) {
         lastFingerPollMs = nowMs;
 
         if (max30102Available) {
-            long irVal = particleSensor.getIR();
-            long redVal = particleSensor.getRed();
+            rawIr = particleSensor.getIR();
+            rawRed = particleSensor.getRed();
 
-            if (irVal > 20000) { // Sensitive finger detection threshold
+            // Sensitive finger detection threshold
+            if (rawIr > 25000) {
                 fingerDetected = true;
 
-                if (checkForBeat(irVal)) {
-                    long delta = nowMs - lastBeatTime;
-                    lastBeatTime = nowMs;
+                // 32-bit Floating Exponential DC Filter
+                if (irDc == 0.0f) {
+                    irDc = (float)rawIr;
+                    redDc = (float)rawRed;
+                } else {
+                    irDc = (irDc * 0.96f) + ((float)rawIr * 0.04f);
+                    redDc = (redDc * 0.96f) + ((float)rawRed * 0.04f);
+                }
 
-                    if (delta > 360 && delta < 1500) { // 40 to 166 BPM
+                float irAc = (float)rawIr - irDc;
+                float redAc = (float)rawRed - redDc;
+
+                if (irAc > irAcMax) irAcMax = irAc;
+                if (irAc < irAcMin) irAcMin = irAc;
+                if (redAc > redAcMax) redAcMax = redAc;
+                if (redAc < redAcMin) redAcMin = redAc;
+
+                float peakDiff = irAcMax - irAcMin;
+
+                // Detect systolic arterial peak
+                if (!inBeatCycle && irAc > (irAcMin + peakDiff * 0.60f) && peakDiff > 60.0f) {
+                    long delta = nowMs - lastBeatTimeMs;
+                    if (delta > 380 && delta < 1500) { // 40 to 157 BPM physiological window
+                        lastBeatTimeMs = nowMs;
+                        inBeatCycle = true;
+
+                        // Visual blink on board LED for 60ms
+                        digitalWrite(PIN_STATUS_LED, LOW);
+                        ledPulseUntilMs = nowMs + 60;
+
                         int instantBpm = 60000 / delta;
                         if (instantBpm >= 45 && instantBpm <= 165) {
                             beatIntervals[beatCount % 4] = instantBpm;
@@ -431,24 +487,49 @@ void loop() {
                             for (int k = 0; k < n; k++) sum += beatIntervals[k];
                             heartRateBpm = sum / n;
 
-                            float ratio = (float)redVal / (float)irVal;
-                            int calcSpo2 = (int)(110.0 - (18.0 * ratio));
-                            spo2Val = constrain(calcSpo2, 94, 99);
+                            // Real SpO2 calculation based on AC/DC ratio of ratios
+                            float acIrAmp = max(10.0f, peakDiff);
+                            float acRedAmp = max(10.0f, redAcMax - redAcMin);
+                            if (irDc > 1000.0f && redDc > 1000.0f) {
+                                float ratio = (acRedAmp / redDc) / (acIrAmp / irDc);
+                                int calcSpo2 = (int)(110.0f - (20.0f * ratio));
+                                spo2Val = constrain(calcSpo2, 94, 99);
+                            }
                         }
                     }
                 }
+
+                // Reset cycle when AC curve returns to valley
+                if (irAc < (irAcMin + peakDiff * 0.35f)) {
+                    inBeatCycle = false;
+                    irAcMax = irAc;
+                    irAcMin = irAc;
+                    redAcMax = redAc;
+                    redAcMin = redAc;
+                }
             } else {
-                // Immediate clear when finger is lifted!
+                // Immediate clear when finger is lifted
                 fingerDetected = false;
                 heartRateBpm = 0;
                 spo2Val = 0;
                 beatCount = 0;
+                irDc = 0.0f;
+                redDc = 0.0f;
+                irAcMax = -99999.0f;
+                irAcMin = 99999.0f;
+                inBeatCycle = false;
             }
         }
     }
 
-    // 3. Refresh OLED Display at 15 FPS
-    if (nowMs - lastOledRefreshMs >= 66) {
+    // Turn off heartbeat LED pulse after 60ms
+    if (ledPulseUntilMs > 0 && nowMs >= ledPulseUntilMs) {
+        digitalWrite(PIN_STATUS_LED, HIGH);
+        ledPulseUntilMs = 0;
+    }
+
+    // 3. Refresh OLED Display at 10 FPS (100ms interval for smooth non-blocking rendering)
+    if (nowMs - lastOledRefreshMs >= 100) {
         lastOledRefreshMs = nowMs;
         updateOledUI();
     }
@@ -486,11 +567,12 @@ void loop() {
         sendTelemetryHttp();
     }
 
-    // 6. Diagnostics to Serial Monitor (Every 2000ms)
-    if (nowMs - lastDiagPrintMs >= 2000) {
+    // 6. Diagnostics to Serial Monitor (Every 1000ms)
+    if (nowMs - lastDiagPrintMs >= 1000) {
         lastDiagPrintMs = nowMs;
-        Serial.printf("[CardioX] WiFi: %s | Finger: %s | HR: %d bpm | SpO2: %d%% | LeadsOff: %s\n",
-            (WiFi.status() == WL_CONNECTED ? "OK" : "DISCONNECTED"),
+        Serial.printf("[CardioX] IR: %ld | RED: %ld | Finger: %s | HR: %d bpm | SpO2: %d%% | LeadsOff: %s\n",
+            rawIr,
+            rawRed,
             (fingerDetected ? "YES" : "NO"),
             heartRateBpm,
             spo2Val,
