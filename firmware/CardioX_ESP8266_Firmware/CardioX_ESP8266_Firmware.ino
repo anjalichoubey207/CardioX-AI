@@ -154,7 +154,7 @@ void processVitals() {
         rawRed = redVal;
 
         // 1. Finger Detection: Check if fleshy tissue is placed on optical sensor
-        if (irVal < 30000) {
+        if (irVal < 25000) {
             fingerOnSensor = false;
             liveBPM = 0.0;
             liveSpO2 = 0.0;
@@ -170,15 +170,15 @@ void processVitals() {
 
         fingerOnSensor = true;
 
-        // 2. DC Perfusion Baseline Tracking
+        // 2. Rapid DC Perfusion Baseline Tracking (Fast lock-on)
         if (irDC < 10000.0) {
             irDC = (float)irVal;
             redDC = (float)redVal;
             cycleMinIR = irDC; cycleMaxIR = irDC;
             cycleMinRed = redDC; cycleMaxRed = redDC;
         } else {
-            irDC = irDC * 0.992 + (float)irVal * 0.008;
-            redDC = redDC * 0.992 + (float)redVal * 0.008;
+            irDC = irDC * 0.985 + (float)irVal * 0.015;
+            redDC = redDC * 0.985 + (float)redVal * 0.015;
         }
 
         // 3. Track Cycle Envelope for SpO2 calculation
@@ -190,13 +190,13 @@ void processVitals() {
         // 4. AC Pulsatile Waveform Extraction & Smoothing
         irAC = (float)irVal - irDC;
         redAC = (float)redVal - redDC;
-        irAC_smooth = irAC_smooth * 0.65 + irAC * 0.35;
+        irAC_smooth = irAC_smooth * 0.60 + irAC * 0.40;
 
         // Store into rolling waveform buffer for OLED PPG oscilloscope
         waveHistory[waveIndex] = (int)irAC_smooth;
         waveIndex = (waveIndex + 1) % 128;
 
-        // 5. Systolic Pulse Crest Detector
+        // 5. Fast Systolic Pulse Crest Detector (High sensitivity: >= 8 counts drop from crest)
         unsigned long now = millis();
 
         if (irAC_smooth > localPeak) {
@@ -204,8 +204,8 @@ void processVitals() {
             isRising = true;
         }
 
-        // Detect crest drop: when signal drops from local peak by >= 15 counts
-        if (isRising && localPeak > 20.0 && (localPeak - irAC_smooth >= 15.0)) {
+        // Detect crest drop: when signal drops from local peak by >= 8 counts (fast trigger)
+        if (isRising && localPeak > 12.0 && (localPeak - irAC_smooth >= 8.0)) {
             isRising = false;
             beatPulseToggle = !beatPulseToggle;
 
@@ -237,7 +237,7 @@ void processVitals() {
                     float acIR = cycleMaxIR - cycleMinIR;
                     float acRed = cycleMaxRed - cycleMinRed;
 
-                    if (acIR > 10.0 && acRed > 10.0 && irDC > 10000.0 && redDC > 10000.0) {
+                    if (acIR > 6.0 && acRed > 6.0 && irDC > 10000.0 && redDC > 10000.0) {
                         float ratio = (acRed / redDC) / (acIR / irDC);
                         float calcSpO2 = 110.0 - 25.0 * ratio;
 
@@ -257,6 +257,8 @@ void processVitals() {
                     cycleMinRed = (float)redVal; cycleMaxRed = (float)redVal;
 
                     Serial.printf("[PULSE] Beat! BPM: %d | SpO2: %d%%\n", (int)liveBPM, (int)liveSpO2);
+                    // Instant telemetry transmit upon every heartbeat!
+                    sendTelemetry();
                 } else if (delta > 1500) {
                     lastBeatTime = now;
                 }
@@ -264,15 +266,15 @@ void processVitals() {
             localPeak = irAC_smooth;
         }
 
-        // Fast SpO2 baseline within 1.5s of contact if not yet registered
-        if (liveSpO2 == 0.0 && fingerOnSensor && irDC > 20000.0) {
+        // Fast Instant SpO2 within 0.4s of finger contact
+        if (fingerOnSensor && irDC > 15000.0) {
             float acIR = cycleMaxIR - cycleMinIR;
             float acRed = cycleMaxRed - cycleMinRed;
-            if (acIR > 20.0 && acRed > 20.0) {
+            if (acIR > 6.0 && acRed > 6.0) {
                 float ratio = (acRed / redDC) / (acIR / irDC);
                 float calc = 110.0 - 25.0 * ratio;
-                if (calc >= 92.0 && calc <= 100.0) {
-                    liveSpO2 = calc;
+                if (calc >= 90.0 && calc <= 100.0) {
+                    liveSpO2 = (liveSpO2 == 0.0) ? calc : (liveSpO2 * 0.85 + calc * 0.15);
                 } else if (ratio < 0.70) {
                     liveSpO2 = 98.0;
                 }

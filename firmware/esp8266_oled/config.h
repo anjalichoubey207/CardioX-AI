@@ -80,7 +80,7 @@
 #define ECG_SAMPLE_INTERVAL_MS (1000 / ECG_SAMPLE_RATE_HZ)
 #define VITALS_POLL_MS      1000  // MAX30102 HR & SpO2 polled every 1000ms
 #define OLED_REFRESH_MS     100   // Refresh OLED every 100ms (10 FPS oscilloscope waveform)
-#define TELEMETRY_SEND_MS   2500  // Heartbeat & status ping every 2500ms
+#define TELEMETRY_SEND_MS   500   // Heartbeat & status ping every 500ms (fast response)
 
 // --- 7. Local Offline Ring Buffer ---
 #if defined(ESP8266)
