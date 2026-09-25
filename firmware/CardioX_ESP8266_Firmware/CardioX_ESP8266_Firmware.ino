@@ -1,12 +1,12 @@
 /**
  * ============================================================================
- * CardioX AI — Universal ESP8266 NodeMCU Firmware (Universal OLED + Real Sensors)
+ * CardioX AI — Complete ESP8266 NodeMCU Firmware (Universal OLED + Real Sensors)
  * ============================================================================
  * Hardware Supported:
  *   - ESP8266 NodeMCU (ESP-12E Module)
  *   - Universal OLED Driver: Supports BOTH 0.96" SSD1306 AND 1.3" SH1106 Displays!
  *   - MAX30102 Pulse Oximeter (32-bit High-Sensitivity Optical HR & SpO2 Engine)
- *   - AD8232 ECG Sensor (Single Lead Biopotential Monitor)
+ *   - AD8232 ECG Sensor (Single Lead Biopotential Monitor on A0)
  * 
  * Pin Wiring (Breadboard):
  *   - OLED SCL & MAX30102 SCL   --> NodeMCU D1 (GPIO 5)
@@ -74,6 +74,7 @@ int  heartRateBpm = 0;
 int  spo2Val = 0;
 long rawIr = 0;
 long rawRed = 0;
+bool backendConnected = false;
 
 // High-Precision 32-bit Pulse Peak Detector State
 float irDc = 0.0f;
@@ -198,7 +199,7 @@ void initWiFi() {
 }
 
 // ============================================================================
-// 5. OLED SCREEN LAYOUT
+// 5. OLED SCREEN LAYOUT (Real Vitals & ECG)
 // ============================================================================
 void updateOledUI() {
     if (!oledAvailable) return;
@@ -220,16 +221,15 @@ void updateOledUI() {
 
     // 2. Real Vitals Row (Heart Rate & SpO2)
     display.setCursor(0, 12);
-    display.print("HR: ");
+    display.print("BPM: ");
     if (fingerDetected) {
         if (heartRateBpm > 0) {
             display.print(heartRateBpm);
-            display.print(" bpm");
         } else {
-            display.print("Detect...");
+            display.print("Detecting");
         }
     } else {
-        display.print("-- bpm");
+        display.print("0");
     }
 
     display.setCursor(68, 12);
@@ -239,14 +239,14 @@ void updateOledUI() {
             display.print(spo2Val);
             display.print("%");
         } else {
-            display.print("Detect...");
+            display.print("Detect");
         }
     } else {
         display.print("--%");
     }
     display.drawLine(0, 22, 127, 22, SSD1306_WHITE);
 
-    // 3. ECG / Sensor Area (Y: 24 to 63)
+    // 3. ECG / Sensor Status Area (Y: 24 to 63)
     if (leadsOff) {
         display.setCursor(4, 28);
         display.print("ECG: Leads Off");
@@ -256,7 +256,7 @@ void updateOledUI() {
         if (fingerDetected) {
             display.print("MAX: Finger OK [o]");
         } else {
-            display.print("Place Finger on MAX");
+            display.print("Place Finger on MAX...");
         }
     } else {
         const int graphBottom = 63;
@@ -289,7 +289,10 @@ void updateOledUI() {
 // 6. WI-FI HTTP TRANSMISSION TO BACKEND
 // ============================================================================
 void sendTelemetryHttp() {
-    if (WiFi.status() != WL_CONNECTED) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        backendConnected = false;
+        return;
+    }
 
     WiFiClient client;
     HTTPClient http;
@@ -318,8 +321,11 @@ void sendTelemetryHttp() {
         String jsonString;
         serializeJson(doc, jsonString);
 
-        http.POST(jsonString);
+        int httpCode = http.POST(jsonString);
+        backendConnected = (httpCode == 200 || httpCode == 201);
         http.end();
+    } else {
+        backendConnected = false;
     }
 }
 
@@ -409,7 +415,7 @@ void setup() {
         oledEcgHistory[i] = 512;
     }
 
-    Serial.println("\n[CardioX] Real-time loop active.\n");
+    Serial.println("\n[CardioX] Real-time loop active. Debugging output at 115200 baud:\n");
 }
 
 // ============================================================================
@@ -445,7 +451,7 @@ void loop() {
             rawRed = particleSensor.getRed();
 
             // Sensitive finger detection threshold
-            if (rawIr > 25000) {
+            if (rawIr > 18000) {
                 fingerDetected = true;
 
                 // 32-bit Floating Exponential DC Filter
@@ -468,7 +474,7 @@ void loop() {
                 float peakDiff = irAcMax - irAcMin;
 
                 // Detect systolic arterial peak
-                if (!inBeatCycle && irAc > (irAcMin + peakDiff * 0.60f) && peakDiff > 60.0f) {
+                if (!inBeatCycle && irAc > (irAcMin + peakDiff * 0.60f) && peakDiff > 50.0f) {
                     long delta = nowMs - lastBeatTimeMs;
                     if (delta > 380 && delta < 1500) { // 40 to 157 BPM physiological window
                         lastBeatTimeMs = nowMs;
@@ -568,16 +574,19 @@ void loop() {
         sendTelemetryHttp();
     }
 
-    // 6. Diagnostics to Serial Monitor (Every 1000ms)
+    // 6. Complete Clear Diagnostics to Serial Monitor (Every 1000ms)
     if (nowMs - lastDiagPrintMs >= 1000) {
         lastDiagPrintMs = nowMs;
-        Serial.printf("[CardioX] IR: %ld | RED: %ld | Finger: %s | HR: %d bpm | SpO2: %d%% | LeadsOff: %s\n",
+        Serial.printf("[DEBUG] MAX30102 @ 0x%02X: %s | IR: %ld | RED: %ld | Finger: %s | BPM: %d | SpO2: %d%% | WiFi: %s | Backend: %s\n",
+            0x57,
+            max30102Available ? "DETECTED" : "NOT_DETECTED",
             rawIr,
             rawRed,
             (fingerDetected ? "YES" : "NO"),
             heartRateBpm,
             spo2Val,
-            (leadsOff ? "YES" : "NO")
+            (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "OFFLINE"),
+            (backendConnected ? "CONNECTED" : "OFFLINE")
         );
     }
 
