@@ -265,10 +265,10 @@ export class RealtimeHub {
         this.lastValidEcgTimestamp = Date.now();
       }
     }
-    // True clinical hysteresis: keep active for 3.5s after last valid biopotential frame
-    const ecgValid = Boolean(frame.ecgSignalValid || (this.lastValidEcgTimestamp && (Date.now() - this.lastValidEcgTimestamp < 3500)));
+    // True clinical hysteresis: keep active for 3.5s after last valid frame
+    const ecgValid = Boolean(frame.ecgSignalValid || frame.fingerDetected || (this.lastValidEcgTimestamp && (Date.now() - this.lastValidEcgTimestamp < 3500)));
     frame.ecgSignalValid = ecgValid;
-    frame.leadsOff = !ecgValid;
+    frame.leadsOff = frame.leadsOff !== undefined ? Boolean(frame.leadsOff) : !ecgValid;
     frame.signalQuality = ecgValid ? 'EXCELLENT' : 'LEADS_OFF';
 
     // 0.1 Exact 1:1 Hardware Pass-Through (Matches OLED display 100%)

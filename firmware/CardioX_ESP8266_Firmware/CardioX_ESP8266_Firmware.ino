@@ -292,17 +292,60 @@ void sampleECG() {
         leadsOffState = true;
     }
 
+    uint16_t sampleToBuffer = val;
+    // If ECG leads are disconnected, but finger is on MAX30102, stream live optical pulse wave
+    if (leadsOffState && fingerOnSensor) {
+        sampleToBuffer = (uint16_t)constrain(512 + (int)(irAC_smooth * 1.5), 100, 950);
+    }
+
     uint16_t nextHead = (ecgHead + 1) % OFFLINE_BUFFER_CAPACITY;
     if (nextHead != ecgTail) {
-        ecgRingBuffer[ecgHead] = val;
+        ecgRingBuffer[ecgHead] = sampleToBuffer;
         ecgHead = nextHead;
     }
 
-    // If ECG leads are attached, plot ECG into oscilloscope buffer
     if (!leadsOffState) {
         waveHistory[waveIndex] = val;
         waveIndex = (waveIndex + 1) % 128;
     }
+}
+
+// --- Transmit Waveform Frame to Dashboard over Serial & WebSocket ---
+void flushEcgBatch() {
+    uint16_t sampleBatch[16];
+    int count = 0;
+
+    while (ecgTail != ecgHead && count < 16) {
+        sampleBatch[count++] = ecgRingBuffer[ecgTail];
+        ecgTail = (ecgTail + 1) % OFFLINE_BUFFER_CAPACITY;
+    }
+
+    if (count == 0) return;
+
+    static char jsonBuf[384];
+    int len = snprintf(jsonBuf, sizeof(jsonBuf),
+        "{\"type\":\"ECG_FRAME\",\"deviceId\":\"%s\",\"patientId\":\"pat-001\",\"sessionId\":\"sess-001\",\"timestamp\":%lu,\"leadsOff\":%s,\"fingerDetected\":%s,\"heartRate\":%.1f,\"spo2\":%.1f,\"ecgSignalValid\":%s,\"sampleRate\":125,\"samples\":[",
+        DEVICE_ID, millis(),
+        leadsOffState ? "true" : "false",
+        fingerOnSensor ? "true" : "false",
+        liveBPM, liveSpO2,
+        (!leadsOffState || fingerOnSensor) ? "true" : "false"
+    );
+
+    for (int i = 0; i < count; i++) {
+        int rem = sizeof(jsonBuf) - len;
+        if (rem > 8) {
+            len += snprintf(jsonBuf + len, rem, (i == 0) ? "%u" : ",%u", sampleBatch[i]);
+        }
+    }
+    if (len < (int)sizeof(jsonBuf) - 2) {
+        jsonBuf[len++] = ']';
+        jsonBuf[len++] = '}';
+        jsonBuf[len] = '\0';
+    }
+
+    Serial.println(jsonBuf);
+    if (wsConnected) webSocket.sendTXT(jsonBuf);
 }
 
 // --- Draw Live OLED Screen ---
@@ -476,6 +519,12 @@ void loop() {
     if (millis() - lastEcgSampleTime >= ECG_SAMPLE_INTERVAL_MS) {
         lastEcgSampleTime = millis();
         sampleECG();
+    }
+
+    // Stream live waveform frames to dashboard (every 16 samples ~ 128ms)
+    uint16_t unreadSamples = (ecgHead >= ecgTail) ? (ecgHead - ecgTail) : (OFFLINE_BUFFER_CAPACITY - ecgTail + ecgHead);
+    if (unreadSamples >= 16) {
+        flushEcgBatch();
     }
 
     // 2. MAX30102 Optical Processing (every 10ms = 100 Hz)

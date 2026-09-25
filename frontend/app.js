@@ -676,7 +676,8 @@ function handleIncomingTelemetry(frame) {
     updateEcgHudStatus();
 
     // 4. Feed incoming real hardware samples into ecgBuffer
-    if (ecgValid && frame.samples && frame.samples.length) {
+    const hasLiveSignal = Boolean(ecgValid || frame.fingerDetected || hasFinger);
+    if (hasLiveSignal && frame.samples && frame.samples.length) {
       if (!isRailed) {
         for (let s of frame.samples) {
           if (s > 1024) s = Math.round(s / 4);
@@ -684,8 +685,8 @@ function handleIncomingTelemetry(frame) {
           if (ecgBuffer.length > MAX_ECG_POINTS) ecgBuffer.shift();
         }
       }
-    } else if (!ecgValid) {
-      // Clear waveform ONLY when disconnected for > 3.5 seconds
+    } else if (!hasLiveSignal) {
+      // Clear waveform ONLY when completely disconnected for > 3.5 seconds
       ecgBuffer = [];
     }
   } else if (frame.type === 'DEVICE_HEARTBEAT') {
