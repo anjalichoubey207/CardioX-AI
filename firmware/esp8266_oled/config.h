@@ -12,13 +12,11 @@
 // ============================================================================
 
 // --- 1. Wi-Fi Credentials ---
-// Configure your local 2.4GHz Wi-Fi network here:
 #define WIFI_SSID           "ANNINDITA"
 #define WIFI_PASSWORD       "10331033"
 #define WIFI_RECONNECT_MS   5000
 
 // --- 2. Backend Server Endpoints ---
-// Set BACKEND_HOST to your computer's local IP (e.g., "10.123.157.183")
 #define BACKEND_HOST        "172.20.135.7"
 #define BACKEND_PORT        5000
 #define BACKEND_WS_PATH     "/ws"
@@ -62,7 +60,7 @@
 #endif
 
 // --- 5. I2C Device Addresses ---
-#define OLED_I2C_ADDR       0x3C  // Standard 0.96" SSD1306 OLED address (or 0x3D)
+#define OLED_I2C_ADDR       0x3C  // Standard 0.96" SSD1306 OLED address
 #define OLED_SCREEN_WIDTH   128
 #define OLED_SCREEN_HEIGHT  64
 #define OLED_RESET_PIN      -1

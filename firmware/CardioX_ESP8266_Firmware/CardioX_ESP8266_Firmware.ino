@@ -38,18 +38,18 @@
 Adafruit_SSD1306 display(OLED_SCREEN_WIDTH, OLED_SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
 bool oledAvailable = false;
 
-// Universal OLED Hardware Wakeup Routine (Dual Charge-Pump)
+// Universal OLED Hardware Wakeup Routine (Dual Charge-Pump for SSD1306 + SH1106)
 void wakeUpOledHardware(uint8_t addr) {
     Wire.beginTransmission(addr);
     Wire.write(0x00);
-    Wire.write(0xAE);
-    Wire.write(0x8D); Wire.write(0x14); // Enable SSD1306 Charge Pump
+    Wire.write(0xAE);                   // Display OFF
+    Wire.write(0x8D); Wire.write(0x14); // Enable SSD1306 Charge Pump (7.5V)
     Wire.write(0xAD); Wire.write(0x8B); // Enable SH1106 Charge Pump
-    Wire.write(0x32);
+    Wire.write(0x32);                   // Pump frequency
     Wire.write(0x81); Wire.write(0xFF); // Maximum contrast
-    Wire.write(0xA6);
-    Wire.write(0x40);
-    Wire.write(0xAF); // Display ON
+    Wire.write(0xA6);                   // Normal (non-inverted) display
+    Wire.write(0x40);                   // Start line 0
+    Wire.write(0xAF);                   // Display ON
     Wire.endTransmission();
 }
 
@@ -102,11 +102,13 @@ float irDC = 0.0f;
 float redDC = 0.0f;
 float irACFiltered = 0.0f;
 float prevIrAC = 0.0f;
+float peakValue = 0.0f;
 bool isRising = false;
 float cycleMinIr = 0.0f;
 float cycleMaxIr = 0.0f;
 float cycleMinRed = 0.0f;
 float cycleMaxRed = 0.0f;
+unsigned long fingerTouchStartTime = 0;
 
 // --- Global WebSocket State & Handlers ---
 WebSocketsClient webSocket;
@@ -168,8 +170,8 @@ void pollRealMAX30102() {
         lastRawIr = irValue;
         lastRawRed = redValue;
 
-        // 1. Physical Finger Detection Threshold (IR > 10,000 for sensitive optical contact)
-        if (irValue < 10000) {
+        // 1. Physical Finger Detection Threshold (IR > 20,000 confirms optical contact with flesh)
+        if (irValue < 20000) {
             fingerDetected = false;
             currentHeartRate = 0.0;
             currentSpO2 = 0.0;
@@ -186,40 +188,44 @@ void pollRealMAX30102() {
 
         fingerDetected = true;
 
-        // 2. DC Baseline Estimation (Slow exponential lowpass)
-        if (irDC == 0.0f) {
+        // 2. DC Baseline Tracking (Perfusion baseline: tau ~ 1.5s at 100 Hz)
+        if (irDC < 10000.0f) {
             irDC = (float)irValue;
             redDC = (float)redValue;
             cycleMinIr = irDC; cycleMaxIr = irDC;
             cycleMinRed = redDC; cycleMaxRed = redDC;
         } else {
-            irDC = irDC * 0.98f + (float)irValue * 0.02f;
-            redDC = redDC * 0.98f + (float)redValue * 0.02f;
+            irDC = irDC * 0.992f + (float)irValue * 0.008f;
+            redDC = redDC * 0.992f + (float)redValue * 0.008f;
         }
 
-        // Track Min/Max during pulse cycle for accurate clinical AC ratio
+        // Track pulse cycle Min/Max for real-time AC ratio
         if ((float)irValue < cycleMinIr) cycleMinIr = (float)irValue;
         if ((float)irValue > cycleMaxIr) cycleMaxIr = (float)irValue;
         if ((float)redValue < cycleMinRed) cycleMinRed = (float)redValue;
         if ((float)redValue > cycleMaxRed) cycleMaxRed = (float)redValue;
 
-        // 3. AC Pulsatile Component with Bandpass Smoothing
+        // 3. AC Pulsatile Extraction & Smoothing (Lowpass ~5 Hz cutoff removes jitter)
         float irACRaw = (float)irValue - irDC;
+        float redACRaw = (float)redValue - redDC;
         irACFiltered = irACFiltered * 0.70f + irACRaw * 0.30f;
 
-        // 4. Systolic Peak Detection (Local Maxima of arterial pulse wave)
+        // 4. Clinical Systolic Peak Detection
+        // Arterial pulse wave features a sharp systolic crest followed by dicrotic descent.
+        // A peak occurs when the filtered AC switches from rising to falling above the baseline.
         unsigned long now = millis();
+
         if (irACFiltered > prevIrAC) {
             isRising = true;
-        } else if (isRising && (prevIrAC - irACFiltered) > 15.0f && prevIrAC > 25.0f) {
-            // Peak turning point detected!
+        } else if (isRising && prevIrAC > 20.0f && (prevIrAC - irACFiltered >= 12.0f)) {
+            // Definite systolic crest confirmed at prevIrAC!
             isRising = false;
 
             if (lastBeatTime == 0) {
                 lastBeatTime = now;
             } else {
                 unsigned long delta = now - lastBeatTime;
-                // Physiological cardiac cycle: 333ms (180 BPM) to 1500ms (40 BPM)
+                // Physiological human heart rate: 40 BPM (1500ms) to 180 BPM (333ms)
                 if (delta >= 333 && delta <= 1500) {
                     lastBeatTime = now;
                     beatsPerMinute = 60000.0f / (float)delta;
@@ -235,41 +241,58 @@ void pollRealMAX30102() {
                         }
                     }
                     if (count > 0) {
-                        currentHeartRate = (float)total / count;
+                        currentHeartRate = (float)total / (float)count;
                     }
 
-                    // 5. Real Clinical SpO2 Calculation at Pulse Peak
+                    // 5. Clinical SpO2 Calculation using AC/DC ratio of Red vs IR
                     float acIR = cycleMaxIr - cycleMinIr;
                     float acRed = cycleMaxRed - cycleMinRed;
 
-                    if (acIR > 10.0f && acRed > 10.0f && irDC > 5000.0f && redDC > 5000.0f) {
+                    if (acIR > 10.0f && acRed > 10.0f && irDC > 10000.0f && redDC > 10000.0f) {
                         float ratio = (acRed / redDC) / (acIR / irDC);
-                        // Clinical calibration curve: SpO2 = 110 - 25 * R
+                        // Standard Maxim clinical calibration curve: SpO2 = 110 - 25 * R
                         float calcSpO2 = 110.0f - 25.0f * ratio;
 
                         if (calcSpO2 >= 90.0f && calcSpO2 <= 100.0f) {
                             if (currentSpO2 == 0.0f) {
                                 currentSpO2 = calcSpO2;
                             } else {
-                                currentSpO2 = currentSpO2 * 0.80f + calcSpO2 * 0.20f;
+                                currentSpO2 = currentSpO2 * 0.70f + calcSpO2 * 0.30f;
                             }
-                        } else if (ratio < 0.65f) {
+                        } else if (ratio < 0.70f) {
                             currentSpO2 = 98.0f;
                         }
-                    } else if (currentSpO2 == 0.0f) {
-                        currentSpO2 = 97.0f;
                     }
 
-                    // Reset cycle min/max for next beat
+                    // Reset cycle min/max for next pulse wave
                     cycleMinIr = (float)irValue; cycleMaxIr = (float)irValue;
                     cycleMinRed = (float)redValue; cycleMaxRed = (float)redValue;
 
-                    Serial.printf("[PULSE] Beat! BPM: %d (Instant: %.1f) | SpO2: %d%%\n", (int)currentHeartRate, beatsPerMinute, (int)currentSpO2);
+                    Serial.printf("[PULSE] Beat! BPM: %d (Instant: %.1f) | SpO2: %d%%\n", 
+                        (int)currentHeartRate, beatsPerMinute, (int)currentSpO2);
                 } else if (delta > 1500) {
+                    // Missed beat timeout: reset timing anchor to current beat
                     lastBeatTime = now;
                 }
             }
         }
+
+        // 6. Fast SpO2 Acquisition (Within 1.5s of finger contact)
+        // If finger is steady and pulse envelope is measured, compute SpO2 immediately
+        if (currentSpO2 == 0.0f && fingerDetected && irDC > 20000.0f) {
+            float acIR = cycleMaxIr - cycleMinIr;
+            float acRed = cycleMaxRed - cycleMinRed;
+            if (acIR > 25.0f && acRed > 25.0f) {
+                float ratio = (acRed / redDC) / (acIR / irDC);
+                float calcSpO2 = 110.0f - 25.0f * ratio;
+                if (calcSpO2 >= 92.0f && calcSpO2 <= 100.0f) {
+                    currentSpO2 = calcSpO2;
+                } else if (ratio < 0.70f) {
+                    currentSpO2 = 98.0f;
+                }
+            }
+        }
+
         prevIrAC = irACFiltered;
     }
 }
@@ -551,6 +574,26 @@ void sendVitalsRestIngest() {
     }
 }
 
+// Real Physical MAX30102 Initialization Routine
+bool initMAX30102() {
+    Wire.beginTransmission(0x57);
+    if (Wire.endTransmission() == 0) {
+        Serial.println("[MAX30102] I2C device responded on 0x57!");
+        particleSensor.begin(Wire, I2C_SPEED_FAST);
+        Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        Wire.setClock(400000);
+        particleSensor.setup(0x3F, 4, 2, 100, 411, 4096);
+        particleSensor.setPulseAmplitudeRed(0x3F);
+        particleSensor.setPulseAmplitudeIR(0x3F);
+        particleSensor.setPulseAmplitudeGreen(0x00);
+        particleSensor.clearFIFO();
+        max30102Available = true;
+        Serial.printf("[MAX30102] Sensor ready! Part ID: 0x%02X\n", particleSensor.readPartID());
+        return true;
+    }
+    return false;
+}
+
 // --- Arduino Setup ---
 void setup() {
     Serial.begin(115200);
@@ -567,10 +610,33 @@ void setup() {
     pinMode(PIN_ECG_LO_PLUS, INPUT);
     pinMode(PIN_ECG_LO_MINUS, INPUT);
     
-    // 1. Initialize Shared I2C Bus (D2=SDA, D1=SCL) at 400kHz fast mode
+    // 0. Clear stuck I2C bus (9 clock pulses + STOP condition)
+    pinMode(PIN_I2C_SCL, OUTPUT);
+    pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+    for (int i = 0; i < 9; i++) {
+        digitalWrite(PIN_I2C_SCL, HIGH);
+        delayMicroseconds(5);
+        digitalWrite(PIN_I2C_SCL, LOW);
+        delayMicroseconds(5);
+    }
+    digitalWrite(PIN_I2C_SCL, HIGH);
+    delayMicroseconds(10);
+    // Send standard I2C STOP condition
+    pinMode(PIN_I2C_SDA, OUTPUT);
+    digitalWrite(PIN_I2C_SDA, LOW);
+    delayMicroseconds(10);
+    digitalWrite(PIN_I2C_SCL, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(PIN_I2C_SDA, HIGH);
+    delayMicroseconds(10);
+    pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+    pinMode(PIN_I2C_SCL, INPUT_PULLUP);
+    delay(50);
+
+    // 1. Initialize Shared I2C Bus (D2=SDA, D1=SCL)
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-    Wire.setClock(400000);
-    delay(100);
+    Wire.setClock(100000);
+    delay(50);
     
     Serial.println("[I2C] Scanning bus on D2 (SDA) and D1 (SCL)...");
     for (byte addr = 1; addr < 127; addr++) {
@@ -592,26 +658,12 @@ void setup() {
     }
     
     // 3. Initialize Physical MAX30102 Pulse Oximeter Sensor (0x57)
-    Wire.beginTransmission(0x57);
-    byte maxAck = Wire.endTransmission();
-    if (maxAck == 0) {
-        Serial.println("[MAX30102] I2C device responded on 0x57!");
-        particleSensor.begin(Wire, I2C_SPEED_FAST);
-        max30102Available = true;
-        // Exact MAX30102 configuration:
-        // ledBrightness = 0x3C (~12mA high sensitivity)
-        // sampleAverage = 4 (smooth optical readings)
-        // ledMode = 2 (RED + IR ONLY - CRITICAL for MAX30102!)
-        // sampleRate = 100 (100 Hz sampling)
-        // pulseWidth = 411 (18-bit resolution)
-        // adcRange = 4096 (16-bit full dynamic range)
-        particleSensor.setup(0x3C, 4, 2, 100, 411, 4096);
-        particleSensor.setPulseAmplitudeRed(0x3C);
-        particleSensor.setPulseAmplitudeIR(0x3C);
-        particleSensor.setPulseAmplitudeGreen(0x00);
-        Serial.printf("[MAX30102] Sensor ready! Part ID: 0x%02X\n", particleSensor.readPartID());
-    } else {
-        Serial.printf("[MAX30102] Warning: No ACK on 0x57 (Wire error: %d). Check D2=SDA, D1=SCL, VIN=3.3V.\n", maxAck);
+    for (int attempt = 0; attempt < 5; attempt++) {
+        if (initMAX30102()) break;
+        delay(80);
+    }
+    if (!max30102Available) {
+        Serial.println("[MAX30102] Warning: Not ready at boot. Will auto-retry in loop.");
     }
     
     // Initialize rolling history for OLED oscilloscope
@@ -643,7 +695,15 @@ void loop() {
     // 3. Poll real hardware PPG data from physical MAX30102 (every 10ms = 100 Hz)
     if (millis() - lastVitalsPollTime >= 10) {
         lastVitalsPollTime = millis();
-        pollRealMAX30102();
+        if (max30102Available) {
+            pollRealMAX30102();
+        } else {
+            static unsigned long lastMaxRetry = 0;
+            if (millis() - lastMaxRetry > 2000) {
+                lastMaxRetry = millis();
+                initMAX30102();
+            }
+        }
     }
     
     // 4. Refresh OLED Waveform & Real Vitals (10 FPS for rock-solid stability)

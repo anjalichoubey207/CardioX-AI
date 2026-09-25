@@ -227,9 +227,7 @@ function startHardwareSerialBridge() {
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.length > 0 && !trimmed.startsWith('{')) {
-          if (trimmed.includes('[DEBUG]') || trimmed.includes('[PULSE]') || trimmed.includes('BRIDGE')) {
-            console.log('[SERIAL MONITOR]:', trimmed);
-          }
+          console.log('[ESP8266]:', trimmed);
         }
         if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
 
