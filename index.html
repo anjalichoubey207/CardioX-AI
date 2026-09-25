@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CardioX AI — Intelligent Remote Cardiac Monitoring</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Chart.js for Trend Charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- html2pdf for high-quality PDF Report Generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+
+  <!-- ==================================================== -->
+  <!-- DUAL-MODE LOGIN OVERLAY (DOCTOR & PATIENT)           -->
+  <!-- ==================================================== -->
+  <div id="loginOverlay" class="login-overlay">
+    <div class="login-card" style="max-width: 410px; padding: 1.75rem;">
+      <!-- Hidden elements for JS compatibility -->
+      <div style="display: none;">
+        <button type="button" id="authTabSignIn" class="tab-btn active"></button>
+        <button type="button" id="authTabSignUp" class="tab-btn"></button>
+      </div>
+
+      <div style="text-align: center; margin-bottom: 1.25rem;">
+        <div class="brand-icon" style="margin: 0 auto 8px; width: 40px; height: 40px; font-size: 20px;">❤️</div>
+        <h2 style="font-size: 1.35rem; font-weight: 800; color: #fff;">CardioX AI</h2>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;" id="loginSubtitle">
+          Sign in to access live cardiac monitoring
+        </p>
+      </div>
+
+      <!-- Role Switcher (Doctor vs Patient) -->
+      <div class="role-switcher" style="margin: 0 0 1.25rem 0; padding: 4px;">
+        <button id="roleBtnDoctor" class="role-btn active" type="button" style="padding: 8px; font-size: 0.85rem;" onclick="setLoginMode('DOCTOR')">
+          <span>👨‍⚕️</span> Doctor
+        </button>
+        <button id="roleBtnPatient" class="role-btn" type="button" style="padding: 8px; font-size: 0.85rem;" onclick="setLoginMode('PATIENT')">
+          <span>👤</span> Patient
+        </button>
+      </div>
+
+      <!-- Login / Signup Form -->
+      <form id="loginForm" onsubmit="handleLoginSubmit(event)" novalidate>
+        <div id="loginError" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #EF4444; color: #FCA5A5; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; margin-bottom: 0.75rem; line-height: 1.4;">
+        </div>
+
+        <div id="loginSuccess" style="display: none; background: rgba(16, 185, 129, 0.15); border: 1px solid #10B981; color: #6EE7B7; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; margin-bottom: 0.75rem; line-height: 1.4;">
+        </div>
+
+        <!-- Full Name, Phone, Gender & Age (Only when creating account) -->
+        <div id="signupNameGroup" style="display: none;">
+          <div class="form-group" style="margin-bottom: 0.85rem;">
+            <label class="form-label" for="signupFullName" style="font-size: 0.78rem;">Full Name <span style="color: #EF4444;">*</span></label>
+            <input type="text" id="signupFullName" class="form-input" style="padding: 8px 12px; font-size: 0.875rem;" placeholder="e.g. Annindita Mukherjee">
+          </div>
+          <div class="form-group" style="margin-bottom: 0.85rem;">
+            <label class="form-label" for="signupPhone" style="font-size: 0.78rem;">Mobile Phone Number</label>
+            <input type="tel" id="signupPhone" class="form-input" style="padding: 8px 12px; font-size: 0.875rem;" placeholder="e.g. 9876543210">
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 0.85rem;">
+            <div>
+              <label class="form-label" for="signupGender" style="font-size: 0.78rem;">Gender</label>
+              <select id="signupGender" class="form-input" style="padding: 8px 12px; font-size: 0.875rem;">
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label" for="signupAge" style="font-size: 0.78rem;">Age</label>
+              <input type="number" id="signupAge" class="form-input" style="padding: 8px 12px; font-size: 0.875rem;" min="1" max="120" value="26">
+            </div>
+          </div>
+        </div>
+
+        <!-- Phone or Email Input -->
+        <div class="form-group" style="margin-bottom: 0.85rem;">
+          <label class="form-label" for="loginEmail" id="loginIdentifierLabel" style="font-size: 0.78rem;">Phone Number or Email <span style="color: #EF4444;">*</span></label>
+          <input type="text" id="loginEmail" class="form-input" style="padding: 9px 12px; font-size: 0.875rem;" placeholder="e.g. 9876543210 or doctor@cardiox.ai" autocomplete="username">
+        </div>
+
+        <!-- Password Input Group (Hidden dynamically when mobile number is entered) -->
+        <div class="form-group" id="loginPasswordGroup" style="margin-bottom: 1rem;">
+          <label class="form-label" for="loginPassword" id="loginPasswordLabel" style="font-size: 0.78rem;">Password <span style="color: #EF4444;">*</span></label>
+          <input type="password" id="loginPassword" class="form-input" style="padding: 9px 12px; font-size: 0.875rem;" placeholder="••••••••" autocomplete="current-password">
+          <div id="passwordHelpText" style="font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; display: none;">Minimum 6 characters (Required for Email only)</div>
+        </div>
+
+        <!-- Mobile No-Password Indicator -->
+        <div id="mobileNoPasswordNotice" style="display: none; font-size: 0.78rem; color: #10B981; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 8px 12px; margin-bottom: 1rem;">
+          <span>📲</span> <strong>Mobile Mode:</strong> Password is not required for mobile sign-in!
+        </div>
+
+        <!-- Sign In Button -->
+        <button type="submit" id="loginSubmitBtn" class="btn" style="width: 100%; padding: 10px; font-weight: 700; font-size: 0.9rem;">
+          Sign In
+        </button>
+
+        <!-- Toggle Sign In / Create Account -->
+        <div style="text-align: center; margin-top: 10px; font-size: 0.78rem; color: var(--text-muted);">
+          <span id="authToggleHint">Don't have an account?</span>
+          <a href="javascript:void(0)" id="authToggleLink" onclick="toggleAuthAction()" style="color: var(--primary); text-decoration: none; font-weight: 600; margin-left: 4px;">Create Account</a>
+        </div>
+      </form>
+
+      <!-- 1-Click Fast Demo Login -->
+      <div style="margin-top: 1.15rem; padding-top: 0.9rem; border-top: 1px solid var(--border); text-align: center;">
+        <div style="font-size: 0.7rem; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">
+          ⚡ 1-Click Demo Login
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn btn-secondary" style="flex: 1; padding: 7px 10px; font-size: 0.78rem;" onclick="quickLogin('9876500001', '', 'DOCTOR')">
+            👨‍⚕️ Doctor (9876500001)
+          </button>
+          <button type="button" class="btn btn-secondary" style="flex: 1; padding: 7px 10px; font-size: 0.78rem;" onclick="quickLogin('9876543210', '', 'PATIENT')">
+            👤 Patient (9876543210)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Navigation Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">❤️</div>
+      <span>CardioX AI</span>
+      <span class="badge badge-med" style="font-size: 0.65rem; padding: 2px 7px; margin-left: 6px; letter-spacing: 0.4px;">PROTOTYPE / DECISION SUPPORT</span>
+    </div>
+
+    <!-- View Switcher Tabs -->
+    <div class="nav-tabs" id="mainNavTabs">
+      <button class="tab-btn active" id="tabBtnDoctor" onclick="switchTab('doctor')">👨‍⚕️ Doctor Dashboard</button>
+      <button class="tab-btn" id="tabBtnPatient" onclick="switchTab('patient')">📱 Patient App</button>
+    </div>
+
+    <!-- User Profile & Status Indicator -->
+    <div class="status-indicator">
+      <!-- Live Simple Clock -->
+      <div id="liveClockDisplay" style="font-size: 0.8125rem; color: #94A3B8; font-weight: 600; margin-right: 12px;">
+        <span id="liveHeaderDateTime">--</span>
+      </div>
+
+      <div id="wsIndicator" class="pulse-dot"></div>
+      <span id="wsStatusText" style="margin-right: 8px;">Gateway: Connected</span>
+
+      <!-- Active User Chip & Logout -->
+      <div id="userProfileChip" style="display: flex; align-items: center; gap: 8px; background: #0B0F19; border: 1px solid var(--border); padding: 4px 10px; border-radius: 8px;">
+        <span id="userRoleBadge" class="badge badge-blue">Doctor</span>
+        <span id="userNameDisplay" style="font-size: 0.8125rem; font-weight: 600; color: #fff;">Dr. Evelyn Vance</span>
+        <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; margin-left: 4px;" onclick="handleLogout()">Sign Out</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main View Area -->
+  <main>
+
+    <!-- ==================================================== -->
+    <!-- 1. DOCTOR WEB DASHBOARD VIEW                         -->
+    <!-- ==================================================== -->
+    <div id="viewDoctor">
+      <!-- Hidden tracking elements for JS compatibility -->
+      <div style="display: none;">
+        <span id="docTotalPatients">1</span>
+        <span id="docActiveMonitoring">1</span>
+        <span id="docActiveAlerts">0</span>
+        <span id="docStatCaption"></span>
+        <span id="docNotesDoctorBadge">Doctor</span>
+        <span id="vitalsFallbackNotice"></span>
+      </div>
+
+      <!-- Hero Real-Time Vitals Cards (The 4 Main Things) -->
+      <div class="stat-grid" style="margin-bottom: 1.25rem;">
+        <!-- 1. Heart Rate -->
+        <div class="stat-card" style="border-left: 4px solid #FF3366; background: linear-gradient(180deg, #161F36 0%, #111728 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="stat-title" style="color: #FDA4AF; font-size: 0.95rem; font-weight: 700;">❤️ Heart Rate</span>
+            <span class="badge" style="background: rgba(255, 51, 102, 0.15); color: #FF3366; font-size: 0.75rem; font-weight: 700;">REAL-TIME</span>
+          </div>
+          <div style="display: flex; align-items: baseline; gap: 8px; margin: 8px 0;">
+            <span class="stat-value" id="liveHrDisplay" style="color: #FF3366; font-size: 3.5rem; font-weight: 900; line-height: 1;">--</span>
+            <span style="font-size: 1.3rem; font-weight: 800; color: #FDA4AF;">BPM</span>
+          </div>
+          <span class="stat-caption" id="liveHrCaption" style="color: var(--text-muted); font-size: 0.8rem;">Waiting for sensor</span>
+        </div>
+
+        <!-- 2. Blood Oxygen -->
+        <div class="stat-card" style="border-left: 4px solid #00F0FF; background: linear-gradient(180deg, #161F36 0%, #111728 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="stat-title" style="color: #A5F3FC; font-size: 0.95rem; font-weight: 700;">🫁 Blood Oxygen (SpO₂)</span>
+            <span class="badge" style="background: rgba(0, 240, 255, 0.15); color: #00F0FF; font-size: 0.75rem; font-weight: 700;">REAL-TIME</span>
+          </div>
+          <div style="display: flex; align-items: baseline; gap: 6px; margin: 8px 0;">
+            <span class="stat-value" id="liveSpo2Display" style="color: #00F0FF; font-size: 3.5rem; font-weight: 900; line-height: 1;">--</span>
+            <span style="font-size: 1.3rem; font-weight: 800; color: #A5F3FC;">%</span>
+          </div>
+          <span class="stat-caption" id="liveSpo2Caption" style="color: var(--text-muted); font-size: 0.8rem;">Waiting for sensor</span>
+        </div>
+
+        <!-- 3. Real-Time ECG Stream -->
+        <div class="stat-card" style="border-left: 4px solid #00F0FF; background: linear-gradient(180deg, #161F36 0%, #111728 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="stat-title" style="color: #A5F3FC; font-size: 0.95rem; font-weight: 700;">⚡ Real-Time ECG</span>
+            <span id="systemModeBadge" class="badge" style="background: rgba(0, 240, 255, 0.15); color: #00F0FF; font-size: 0.75rem; font-weight: 700;">LIVE</span>
+          </div>
+          <div style="margin: 8px 0;">
+            <span id="ecgQualityBadge" class="badge badge-low" style="font-size: 0.92rem; padding: 6px 12px; font-weight: 700; color: #00F0FF; background: rgba(0, 240, 255, 0.15); border: 1px solid #00F0FF;">● Live ECG Stream Active</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--text-muted);">
+            <span id="ecgLiveDot" style="color: #00F0FF;">●</span>
+            <span id="ecgLiveBadge" class="badge badge-low" style="font-size: 0.72rem; color: #00F0FF; background: rgba(0, 240, 255, 0.15);">Lead II</span>
+            <span>125 Hz Real Wave</span>
+          </div>
+        </div>
+
+        <!-- 4. Active Patient -->
+        <div class="stat-card" style="border-left: 4px solid #3B82F6; background: linear-gradient(180deg, #161F36 0%, #111728 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="stat-title" style="color: #BFDBFE; font-size: 0.95rem; font-weight: 700;">👤 Monitored Patient</span>
+            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.72rem;" onclick="openPatientEditModal()">✏️ Edit</button>
+          </div>
+          <div style="margin: 6px 0;">
+            <span id="activeMonitoringLabel" style="font-size: 1.35rem; font-weight: 700; color: #fff;">Annindita (pat-001)</span>
+          </div>
+          <span class="badge badge-blue" id="activePatientDemographicsBadge" style="width: fit-content;">Female, 26 yrs</span>
+        </div>
+      </div>
+
+      <!-- Live ECG Telemetry Monitor Panel -->
+      <div class="ecg-panel" style="margin-bottom: 1.25rem;">
+        <div class="ecg-header" style="flex-wrap: wrap; gap: 10px;">
+          <div class="ecg-title" style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 1.1rem;">📈</span>
+            <span style="font-weight: 700; font-size: 1rem; color: #fff;">Real-Time ECG Waveform (Lead II)</span>
+            <span id="ecgLiveTraceDot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #00F0FF; box-shadow: 0 0 8px #00F0FF; animation: pulse 1.5s infinite;"></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-success" id="btnDownloadReadingsTop" style="padding: 5px 12px; font-size: 0.78rem; font-weight: 700; background: #059669; border-color: #059669;" onclick="downloadReadingsCSV()" title="Download Excel CSV data file">📥 Download Readings (CSV)</button>
+            <button class="btn btn-secondary" style="padding: 5px 12px; font-size: 0.78rem;" onclick="resetEcgScale()">Center Grid</button>
+            <button class="btn btn-success" style="padding: 5px 12px; font-size: 0.78rem;" onclick="triggerHardwareTestPulse()" title="Send diagnostic test pulse">⚡ Test Pulse</button>
+          </div>
+        </div>
+
+        <div class="canvas-wrapper">
+          <canvas id="ecgCanvas" width="1200" height="230"></canvas>
+        </div>
+
+        <!-- Real-Time Telemetry HUD Footer Bar -->
+        <div style="background: #080D1A; border-top: 1px solid rgba(0, 240, 255, 0.15); padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #94A3B8; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <span style="color: #00F0FF; font-weight: 800; letter-spacing: 0.05em; background: rgba(0, 240, 255, 0.1); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(0, 240, 255, 0.3);">LEAD II</span>
+            <span style="font-family: monospace; color: #E2E8F0;">Standard: <strong>25 mm/s</strong> • <strong>10 mm/mV</strong></span>
+            <span style="color: #475569;">|</span>
+            <span style="color: #00F0FF; font-weight: 600;">Real Hardware ECG Stream</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span id="ecgHeartRateOverlay" style="color: #00F0FF; font-weight: 700; font-family: monospace; font-size: 0.85rem;">HR: -- BPM</span>
+            <span style="color: #64748B;">• Filter: 0.05 - 150 Hz</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Clinical Insights & 1-Click Medical Report -->
+      <!-- AI Clinical Insights -->
+      <!-- AI-Assisted Clinical Telemetry Assessment -->
+      <div class="data-card" style="margin-bottom: 1.25rem;">
+        <div class="card-header-bar" style="margin-bottom: 0.6rem;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.1rem;">🩺</span>
+            <h3 style="margin: 0; font-size: 1rem;">AI-Assisted Telemetry Screening</h3>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="badge badge-low" id="docAiRiskBadge" style="font-weight: 700;">Risk: Normal</span>
+            <span class="badge badge-low" id="docAiEcgBadge" style="font-weight: 600;">ECG: Normal</span>
+          </div>
+        </div>
+
+        <!-- Clean Doctor AI Summary -->
+        <p id="docAiSummaryText" style="font-size: 0.9rem; line-height: 1.5; color: #E2E8F0; margin: 0 0 10px 0;">
+          Telemetry is stable. Normal sinus rhythm with heart rate and SpO₂ aligned with patient baseline.
+        </p>
+
+        <!-- Minimal Footer with Disclaimer & Report Actions -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding-top: 8px; border-top: 1px solid var(--border);">
+          <div style="font-size: 0.74rem; color: #94A3B8;">
+            ⚠️ AI-assisted screening only. Not a medical diagnosis.
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="btnDownloadReadingsDoc" class="btn btn-success" style="padding: 7px 16px; font-weight: 700; font-size: 0.82rem; background: #059669; border-color: #059669;" onclick="downloadReadingsCSV()">📥 Download Readings (CSV)</button>
+            <button id="btnGenerateDocReport" class="btn" style="padding: 7px 16px; font-weight: 700; font-size: 0.82rem;" onclick="generateReport()">📄 Download PDF Report</button>
+            <button class="btn btn-secondary" style="padding: 7px 12px; font-size: 0.82rem;" onclick="triggerAiRecheck()">🔄 Re-evaluate</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Assigned Patients Directory -->
+      <div class="data-card" style="margin-bottom: 1.25rem;">
+        <div class="card-header-bar">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <h3 style="margin: 0; font-size: 1rem;">👥 Assigned Patients</h3>
+            <button class="btn btn-success" style="padding: 4px 12px; font-size: 0.78rem;" onclick="openAddPatientModal()">➕ Add Patient</button>
+          </div>
+          <input type="text" id="patientSearchInput" class="search-input" style="max-width: 260px;" placeholder="Search patient name or ID..." onkeyup="filterPatients()">
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Patient</th>
+              <th>Demographics</th>
+              <th>Status</th>
+              <th>HR</th>
+              <th>SpO₂</th>
+              <th>Attention</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="patientTableBody">
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Expandable Secondary Tools (Trends & Clinical Notes) -->
+      <details style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin-bottom: 1.5rem;">
+        <summary style="cursor: pointer; font-weight: 600; color: var(--text-muted); font-size: 0.875rem; user-select: none;">
+          📊 Secondary Tools: 24-Hour Trends & Clinical Observations (Click to Expand)
+        </summary>
+        <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 1.5rem; margin-top: 1rem;">
+          <div style="height: 220px;">
+            <div style="font-size: 0.8rem; color: var(--text-sub); margin-bottom: 6px;">Today's Vital Trends (24h)</div>
+            <canvas id="trendsChart"></canvas>
+          </div>
+          <div>
+            <div style="font-size: 0.8rem; color: var(--text-sub); margin-bottom: 6px;">Doctor Clinical Notes</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+              <input type="text" id="newNoteInput" class="search-input" style="flex: 1;" placeholder="Add clinical observation...">
+              <button class="btn" onclick="saveDoctorNote()">Save Note</button>
+            </div>
+            <div id="notesList" style="display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto;"></div>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <!-- ==================================================== -->
+    <!-- 2. PATIENT MOBILE VIEW                               -->
+    <!-- ==================================================== -->
+    <div id="viewPatient" style="display: none; max-width: 440px; margin: 0 auto;">
+      <div style="background: #131B2E; border: 2px solid #222F4C; border-radius: 28px; padding: 1.5rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <!-- Mobile Header -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+          <div>
+            <span style="font-size: 0.8125rem; color: var(--text-muted);">Welcome back,</span>
+            <h2 style="font-size: 1.25rem; font-weight: 700;" id="mobilePatientName">Annindita</h2>
+          </div>
+          <span class="badge badge-low" id="patStatusBadge">● Monitoring</span>
+        </div>
+
+        <!-- Vitals Dual Card -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+          <div class="stat-card" style="background: #0B0F19; border: 1px solid #222F4C; border-radius: 16px; padding: 1rem; text-align: center;">
+            <div style="font-size: 0.8125rem; color: var(--text-sub); margin-bottom: 4px; font-weight: 600;">❤️ Heart Rate</div>
+            <div style="font-size: 2.2rem; font-weight: 900; color: #FF3366; line-height: 1.1; margin: 4px 0;">
+              <span id="patHrValue">--</span>
+              <span id="patHrUnit" style="font-size: 0.95rem; font-weight: 700; color: #FDA4AF; display: none;">BPM</span>
+            </div>
+            <div id="patHrCaption" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Waiting for sensor</div>
+          </div>
+          <div class="stat-card" style="background: #0B0F19; border: 1px solid #222F4C; border-radius: 16px; padding: 1rem; text-align: center;">
+            <div style="font-size: 0.8125rem; color: var(--text-sub); margin-bottom: 4px; font-weight: 600;">🫁 SpO₂ Level</div>
+            <div style="font-size: 2.2rem; font-weight: 900; color: #00F0FF; line-height: 1.1; margin: 4px 0;">
+              <span id="patSpo2Value">--</span>
+              <span id="patSpo2Unit" style="font-size: 0.95rem; font-weight: 700; color: #A5F3FC; display: none;">%</span>
+            </div>
+            <div id="patSpo2Caption" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Waiting for sensor</div>
+          </div>
+        </div>
+
+        <!-- Mini Live ECG Card -->
+        <div style="background: #060913; border: 1px solid #222F4C; border-radius: 16px; padding: 1rem; margin-bottom: 1.25rem;">
+          <div style="display: flex; justify-content: space-between; font-size: 0.8125rem; margin-bottom: 8px;">
+            <span style="font-weight: 600; color: #fff;">Real-Time ECG Rhythm</span>
+            <span id="patSignalText" style="color: #00F0FF; font-weight: 600;">● Live ECG Stream</span>
+          </div>
+          <div style="height: 110px; width: 100%; overflow: hidden; border-radius: 8px;">
+            <canvas id="patMiniEcgCanvas" width="400" height="110"></canvas>
+          </div>
+        </div>
+
+        <!-- Session Controls & Download PDF Report -->
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 1.25rem;">
+          <button id="btnToggleSession" class="btn btn-danger" style="width: 100%; padding: 12px;" onclick="togglePatientSession()">
+            ⏹ Stop Monitoring
+          </button>
+          <button id="btnDownloadPatientReport" class="btn btn-success" style="width: 100%; padding: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="downloadPatientReport()">
+            <span>📥</span> Download PDF Medical Report
+          </button>
+        </div>
+
+        <!-- Patient AI Monitoring Summary (Age & Actual Measured Vitals Grounded) -->
+        <div style="background: #0B0F19; border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 16px; padding: 1.2rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 1.1rem;">🩺</span>
+              <span style="font-weight: 700; font-size: 0.95rem; color: #60A5FA;">AI Monitoring Summary</span>
+            </div>
+            <span class="badge" id="patAiScoreBadge" style="background: rgba(100, 116, 139, 0.2); color: #94A3B8; font-weight: 700;">Insufficient data</span>
+          </div>
+          <div id="patAiVitalsContext" style="font-size: 0.78rem; color: #94A3B8; margin-bottom: 6px; font-weight: 600;">
+            Patient Age: <span id="patAiAgeDisplay">26 yrs</span> • Measured Vitals: <span id="patAiVitalsDisplay">Waiting for sensor</span>
+          </div>
+          <p id="patAiSummaryBody" style="font-size: 0.835rem; color: #E2E8F0; line-height: 1.5; margin: 0 0 10px 0;">
+            Insufficient data. Please place your finger on the MAX30102 sensor and ensure AD8232 ECG electrodes are attached to generate your AI monitoring summary.
+          </p>
+          <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; padding: 6px 10px; font-size: 0.72rem; color: #94A3B8; display: flex; align-items: center; gap: 6px;">
+            <span>ℹ️</span>
+            <span>Clinical monitoring & decision-support summary only. Not a medical diagnosis.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================== -->
+    <!-- MINIMAL CLEAN PDF REPORT TEMPLATE                    -->
+    <!-- ==================================================== -->
+    <!-- ==================================================== -->
+    <!-- CLEAN & SIMPLE PATIENT PDF REPORT TEMPLATE           -->
+    <!-- ==================================================== -->
+    <div id="pdfExportWrapper" class="pdf-export-wrapper">
+      <div id="pdfReportContent" class="pdf-minimal-card" style="gap: 18px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0F172A;">
+        
+        <!-- Header: Logo, Title & Exact Date-Time -->
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0284C7; padding-bottom: 14px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 28px;">❤️</span>
+            <div>
+              <div style="font-size: 22px; font-weight: 800; color: #0F172A; letter-spacing: -0.02em;">CardioX AI</div>
+              <div style="font-size: 12px; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Patient Cardiac Health Summary</div>
+            </div>
+          </div>
+          <div style="text-align: right;">
+            <div style="font-size: 11px; text-transform: uppercase; color: #64748B; font-weight: 700;">Date & Time</div>
+            <div id="pdfMinDateTime" style="font-size: 15px; font-weight: 800; color: #0F172A; margin: 3px 0;">--</div>
+            <div style="font-size: 11px; color: #64748B;">Doctor: <strong id="pdfHeaderDoctorName" style="color: #0284C7;">Dr. Evelyn Vance, MD</strong></div>
+          </div>
+        </div>
+
+        <!-- Patient Simple Info Bar -->
+        <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div>
+              <span style="font-size: 10px; text-transform: uppercase; color: #64748B; font-weight: 700;">Patient Name</span>
+              <div id="pdfMinPatientName" style="font-size: 20px; font-weight: 800; color: #0F172A;">Annindita</div>
+            </div>
+            <div style="text-align: right;">
+              <span style="font-size: 10px; text-transform: uppercase; color: #64748B; font-weight: 700;">Patient ID</span>
+              <div id="pdfMinPatientId" style="font-size: 15px; font-weight: 800; color: #0284C7;">pat-001</div>
+            </div>
+          </div>
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #E2E8F0; padding-top: 10px; font-size: 12px; color: #334155;">
+            <div>Age & Gender: <strong id="pdfMinPatientAgeGender" style="color: #0F172A;">26 yrs, Female</strong></div>
+            <div>Blood Group: <strong id="pdfMinPatientBlood" style="color: #0F172A;">B+</strong></div>
+            <div>Contact: <strong id="pdfMinPatientPhone" style="color: #0F172A;">+91-98765-43210</strong></div>
+            <div>Doctor: <strong id="pdfSupervisingDoctor" style="color: #0284C7;">Dr. Evelyn Vance, MD</strong></div>
+          </div>
+        </div>
+
+        <!-- Vitals: Heart Rate, SpO2, ECG Rhythm (3 Big Clean Cards) -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <!-- Heart Rate -->
+          <div style="background: #FFF1F2; border: 1px solid #FECDD3; border-radius: 10px; padding: 16px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #E11D48; text-transform: uppercase;">Heart Rate</div>
+            <div style="font-size: 36px; font-weight: 800; color: #E11D48; margin: 4px 0;">
+              <span id="pdfMinHr">76</span> <span style="font-size: 14px; font-weight: 600; color: #64748B;">BPM</span>
+            </div>
+            <div id="pdfMinHrStatus" style="font-size: 11px; font-weight: 700; color: #E11D48;">Normal Resting Cadence</div>
+          </div>
+
+          <!-- Blood Oxygen -->
+          <div style="background: #F0FDFA; border: 1px solid #CCFBF1; border-radius: 10px; padding: 16px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #0D9488; text-transform: uppercase;">Blood Oxygen</div>
+            <div style="font-size: 36px; font-weight: 800; color: #0D9488; margin: 4px 0;">
+              <span id="pdfMinSpo2">98</span><span style="font-size: 14px; font-weight: 600; color: #64748B;">%</span>
+            </div>
+            <div id="pdfMinSpo2Status" style="font-size: 11px; font-weight: 700; color: #0D9488;">Optimal Oxygenation</div>
+          </div>
+
+          <!-- ECG Rhythm -->
+          <div style="background: #F0F9FF; border: 1px solid #BAE6FD; border-radius: 10px; padding: 16px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #0284C7; text-transform: uppercase;">ECG Rhythm</div>
+            <div id="pdfMinEcgStatus" style="font-size: 15px; font-weight: 800; color: #0284C7; margin: 12px 0 6px 0;">
+              Normal Sinus Rhythm
+            </div>
+            <div style="font-size: 11px; font-weight: 700; color: #059669;">● Regular Pattern</div>
+          </div>
+        </div>
+ 
+        <!-- Simple ECG Pulse Wave Card -->
+        <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 10px 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 11px; font-weight: 700; color: #0284C7; text-transform: uppercase; letter-spacing: 0.04em;">ECG Heartbeat Wave</span>
+            <span style="font-size: 11px; font-weight: 700; color: #059669;">● Steady & Regular Rhythm</span>
+          </div>
+          <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px; padding: 2px; overflow: hidden;">
+            <canvas id="pdfEcgStripCanvas" width="650" height="60" style="display: block; width: 100%; height: 60px;"></canvas>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 10px; color: #64748B;">
+            <span>Lead II Rhythm • Resting Cadence</span>
+            <span>Normal Cardiac Cycle</span>
+          </div>
+        </div>
+
+        <!-- Simple Health Status & Summary -->
+        <div style="background: #F0FDF4; border: 1px solid #BBF7D0; border-left: 5px solid #16A34A; border-radius: 10px; padding: 14px 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 12px; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.04em;">Overall Health Status</span>
+            <span id="pdfMinRiskLevel" style="font-size: 12px; font-weight: 800; background: #DCFCE7; color: #166534; padding: 3px 10px; border-radius: 6px; border: 1px solid #86EFAC;">NORMAL</span>
+          </div>
+          <p id="pdfMinSummaryText" style="font-size: 12.5px; color: #1E293B; line-height: 1.5; margin: 0;">
+            Your readings remained consistent with your established personal baseline during this session. Heart rate averaged 76 BPM and oxygen levels stayed optimal at 98%.
+          </p>
+          <div style="font-size: 10px; color: #64748B; font-style: italic; margin-top: 8px;">
+            ⚠️ AI-assisted screening only. Not a medical diagnosis.
+          </div>
+        </div>
+
+        <!-- Doctor's Advice & Observations -->
+        <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-left: 5px solid #0284C7; border-radius: 10px; padding: 14px 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; border-bottom: 1px dashed #CBD5E1; padding-bottom: 6px;">
+            <span style="font-size: 12px; font-weight: 700; color: #0284C7; text-transform: uppercase; letter-spacing: 0.04em;">Doctor's Advice & Observations</span>
+            <span id="pdfMinDoctorName" style="font-size: 11px; font-weight: 600; color: #64748B;">Dr. Evelyn Vance, MD</span>
+          </div>
+          <div id="pdfMinNotesList" style="font-size: 12px; color: #334155; line-height: 1.5;">
+            Patient is in stable resting cardiac rhythm. Continue daily routine, maintain active hydration, and follow up as scheduled.
+          </div>
+        </div>
+
+        <!-- Clean Footer & Verification -->
+        <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #E2E8F0; padding-top: 10px; font-size: 11px; color: #64748B;">
+          <div>CardioX AI Telemetry Monitoring System</div>
+          <div>Supervising Doctor: <strong id="pdfSignoffDoctor" style="color: #0284C7;">Dr. Evelyn Vance, MD</strong> • <span id="pdfSignoffTimestamp">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================== -->
+    <!-- EDIT PATIENT PROFILE MODAL (Name, Gender, Age)      -->
+    <!-- ==================================================== -->
+    <div id="patientEditModal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3><span>👤</span> Edit Patient Profile</h3>
+          <button class="modal-close-btn" onclick="closePatientEditModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field">
+            <label for="editModalPatientName">Full Name</label>
+            <input type="text" id="editModalPatientName" class="search-input" style="width: 100%;" placeholder="e.g. Annindita Mukherjee">
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="modal-field">
+              <label for="editModalPatientGender">Gender</label>
+              <select id="editModalPatientGender" class="search-input" style="width: 100%;">
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div class="modal-field">
+              <label for="editModalPatientAge">Age (Years)</label>
+              <input type="number" id="editModalPatientAge" class="search-input" style="width: 100%;" min="1" max="120" placeholder="e.g. 26">
+            </div>
+          </div>
+          <div class="modal-field">
+            <label for="editModalPatientBlood">Blood Group</label>
+            <select id="editModalPatientBlood" class="search-input" style="width: 100%;">
+              <option value="B+">B+</option>
+              <option value="A+">A+</option>
+              <option value="O+">O+</option>
+              <option value="AB+">AB+</option>
+              <option value="B-">B-</option>
+              <option value="A-">A-</option>
+              <option value="O-">O-</option>
+              <option value="AB-">AB-</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closePatientEditModal()">Cancel</button>
+          <button class="btn btn-success" onclick="savePatientProfileModal()">💾 Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================== -->
+    <!-- ADD REAL PATIENT MODAL                               -->
+    <!-- ==================================================== -->
+    <div id="addPatientModal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3><span>➕</span> Add Real Patient to System</h3>
+          <button class="modal-close-btn" onclick="closeAddPatientModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px;">
+            <div class="modal-field">
+              <label for="newPatientName">Patient Full Name <span style="color: #EF4444;">*</span></label>
+              <input type="text" id="newPatientName" class="search-input" style="width: 100%;" placeholder="e.g. Rajesh Sharma, Priya Patel">
+            </div>
+            <div class="modal-field">
+              <label for="newPatientId">Patient ID <span style="color: #EF4444;">*</span></label>
+              <input type="text" id="newPatientId" class="search-input" style="width: 100%;" placeholder="e.g. pat-101 (or auto)">
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="modal-field">
+              <label for="newPatientGender">Gender <span style="color: #EF4444;">*</span></label>
+              <select id="newPatientGender" class="search-input" style="width: 100%;">
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div class="modal-field">
+              <label for="newPatientAge">Age (Years) <span style="color: #EF4444;">*</span></label>
+              <input type="number" id="newPatientAge" class="search-input" style="width: 100%;" min="1" max="120" placeholder="e.g. 35" value="30">
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1.3fr; gap: 12px;">
+            <div class="modal-field">
+              <label for="newPatientBlood">Blood Group</label>
+              <select id="newPatientBlood" class="search-input" style="width: 100%;">
+                <option value="B+">B+</option>
+                <option value="A+">A+</option>
+                <option value="O+">O+</option>
+                <option value="AB+">AB+</option>
+                <option value="B-">B-</option>
+                <option value="A-">A-</option>
+                <option value="O-">O-</option>
+                <option value="AB-">AB-</option>
+              </select>
+            </div>
+            <div class="modal-field">
+              <label for="newPatientContact">Phone Number or Email</label>
+              <input type="text" id="newPatientContact" class="search-input" style="width: 100%;" placeholder="e.g. 9876543210 or user@mail.com">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeAddPatientModal()">Cancel</button>
+          <button class="btn btn-success" onclick="saveNewPatientModal()">➕ Add Patient & Monitor</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Script logic -->
+  <script src="app.js"></script>
+</body>
+</html>
