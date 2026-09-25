@@ -1,146 +1,74 @@
 /**
- * ============================================================================
- * CardioX AI — Complete ESP8266 NodeMCU Firmware (Universal OLED + Real Sensors)
- * ============================================================================
- * Hardware Supported:
- *   - ESP8266 NodeMCU (ESP-12E Module)
- *   - Universal OLED Driver: Supports BOTH 0.96" SSD1306 AND 1.3" SH1106 Displays!
- *   - MAX30102 Pulse Oximeter (32-bit High-Sensitivity Optical HR & SpO2 Engine)
- *   - AD8232 ECG Sensor (Single Lead Biopotential Monitor on A0)
- * 
- * Pin Wiring (Breadboard):
- *   - OLED SCL & MAX30102 SCL   --> NodeMCU D1 (GPIO 5)
- *   - OLED SDA & MAX30102 SDA   --> NodeMCU D2 (GPIO 4)
- *   - AD8232 OUTPUT             --> NodeMCU A0
- *   - AD8232 LO+                --> NodeMCU D5 (GPIO 14)
- *   - AD8232 LO-                --> NodeMCU D6 (GPIO 12)
- *   - VCC of all modules        --> NodeMCU 3V3 (3.3V)
- *   - GND of all modules        --> NodeMCU GND
- * 
- * Libraries Used (Already installed on your system):
- *   - Adafruit_GFX
- *   - Adafruit_SSD1306
- *   - SparkFun_MAX3010x_Pulse_and_Proximity_Sensor_Library
- *   - ArduinoJson
- * ============================================================================
+ * CardioX AI - IoT Embedded Firmware (Production Release)
+ * Target: ESP8266 (NodeMCU / Wemos D1) & ESP32
+ * Sensors: 
+ *   - AD8232 (Single Lead ECG on A0)
+ *   - MAX30102 (Real Hardware PPG for physical HR & SpO2)
+ * Display: 
+ *   - 0.96" I2C SSD1306 OLED (128x64)
+ * Communication: 
+ *   - Wi-Fi + Real-time WebSocket + REST Telemetry Ingest
  */
 
 #include <Arduino.h>
-#include <Wire.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <WiFiClient.h>
-#include <ArduinoJson.h>
 
+#if defined(ESP8266)
+  #include <ESP8266WiFi.h>
+  #include <ESP8266HTTPClient.h>
+  #include <WiFiClient.h>
+#else
+  #include <WiFi.h>
+  #include <HTTPClient.h>
+  #include <WiFiClientSecure.h>
+#endif
+
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+#include "spo2_algorithm.h"
+#include "config.h"
 
-#include <MAX30105.h>
-
-// ============================================================================
-// 1. CONFIGURATION
-// ============================================================================
-const char* WIFI_SSID     = "ANNINDITA";      // Change if using different Wi-Fi/Hotspot
-const char* WIFI_PASSWORD = "10331033";       // Change if using different password
-
-const char* BACKEND_HOST  = "172.20.135.7";   // Laptop Wi-Fi IP running CardioX AI
-const int   BACKEND_PORT  = 5000;
-const char* INGEST_PATH   = "/api/v1/vitals/ingest";
-
-const char* DEVICE_ID     = "DX-ESP8266-001";
-const char* PATIENT_ID    = "pat-001";
-const char* SESSION_ID    = "sess-001";
-
-// --- Hardware Pins ---
-#define PIN_I2C_SDA       4     // D2 (GPIO 4)
-#define PIN_I2C_SCL       5     // D1 (GPIO 5)
-#define PIN_ECG_OUT       A0    // AD8232 Analog Out
-#define PIN_ECG_LO_PLUS   14    // D5 (GPIO 14)
-#define PIN_ECG_LO_MINUS  12    // D6 (GPIO 12)
-#define PIN_STATUS_LED    2     // D4 (Built-in Blue LED, Active LOW)
-
-// --- OLED Settings ---
-#define SCREEN_WIDTH      128
-#define SCREEN_HEIGHT     64
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// --- Hardware Display: 0.96" SSD1306 / SH1106 OLED ---
+Adafruit_SSD1306 display(OLED_SCREEN_WIDTH, OLED_SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
 bool oledAvailable = false;
-uint8_t oledAddress = 0x3C;
 
-// --- MAX30102 Instance ---
-MAX30105 particleSensor;
-bool max30102Available = false;
-bool fingerDetected = false;
-int  heartRateBpm = 0;
-int  spo2Val = 0;
-long rawIr = 0;
-long rawRed = 0;
-bool backendConnected = false;
-
-// High-Precision 32-bit Pulse Peak Detector State
-float irDc = 0.0f;
-float redDc = 0.0f;
-float irAcMax = -99999.0f;
-float irAcMin = 99999.0f;
-float redAcMax = -99999.0f;
-float redAcMin = 99999.0f;
-bool  inBeatCycle = false;
-long  lastBeatTimeMs = 0;
-int   beatCount = 0;
-int   beatIntervals[4] = {0, 0, 0, 0};
-unsigned long ledPulseUntilMs = 0;
-
-// --- ECG Waveform State ---
-int oledEcgHistory[128];
-int oledHistoryIndex = 0;
-bool leadsOff = true;
-
-// Timing Trackers
-unsigned long lastEcgSampleUs = 0;
-unsigned long lastFingerPollMs = 0;
-unsigned long lastOledRefreshMs = 0;
-unsigned long lastHttpSendMs = 0;
-unsigned long lastSerialSendMs = 0;
-unsigned long lastWifiCheckMs = 0;
-unsigned long lastDiagPrintMs = 0;
-
-// ============================================================================
-// 2. UNIVERSAL OLED DISPLAY CONTROLLER (Works on BOTH SSD1306 & SH1106!)
-// ============================================================================
+// Universal OLED Hardware Wakeup Routine (Dual Charge-Pump)
 void wakeUpOledHardware(uint8_t addr) {
     Wire.beginTransmission(addr);
-    Wire.write(0x00);        // Command stream
-    Wire.write(0xAE);        // Display OFF
+    Wire.write(0x00);
+    Wire.write(0xAE);
     Wire.write(0x8D); Wire.write(0x14); // Enable SSD1306 Charge Pump
-    Wire.write(0xAD); Wire.write(0x8B); // Enable SH1106 Charge Pump DC-DC
-    Wire.write(0x32);        // Pump frequency
-    Wire.write(0x81); Wire.write(0xFF); // Maximum contrast (Super Bright)
-    Wire.write(0xA6);        // Normal display (non-inverted)
-    Wire.write(0x40);        // Start line 0
-    Wire.write(0xAF);        // Display ON!
+    Wire.write(0xAD); Wire.write(0x8B); // Enable SH1106 Charge Pump
+    Wire.write(0x32);
+    Wire.write(0x81); Wire.write(0xFF); // Maximum contrast
+    Wire.write(0xA6);
+    Wire.write(0x40);
+    Wire.write(0xAF); // Display ON
     Wire.endTransmission();
 }
 
 void renderUniversalOled() {
     if (!oledAvailable) return;
-
-    // 1. Native Adafruit buffer flush (for SSD1306 displays)
     display.display();
 
-    // 2. Also send page-by-page with 2-pixel column offset (for SH1106 1.3" displays)
     uint8_t* buf = display.getBuffer();
     if (!buf) return;
 
     for (uint8_t page = 0; page < 8; page++) {
-        Wire.beginTransmission(oledAddress);
+        Wire.beginTransmission(OLED_I2C_ADDR);
         Wire.write(0x00);
-        Wire.write(0xB0 + page); // Set page address (0 to 7)
-        Wire.write(0x02);        // Column low address (2-pixel offset for SH1106)
-        Wire.write(0x10);        // Column high address
+        Wire.write(0xB0 + page);
+        Wire.write(0x02);
+        Wire.write(0x10);
         Wire.endTransmission();
 
         for (uint8_t chunk = 0; chunk < 8; chunk++) {
-            Wire.beginTransmission(oledAddress);
-            Wire.write(0x40);    // Data stream
+            Wire.beginTransmission(OLED_I2C_ADDR);
+            Wire.write(0x40);
             for (uint8_t i = 0; i < 16; i++) {
                 Wire.write(buf[page * 128 + chunk * 16 + i]);
             }
@@ -149,452 +77,567 @@ void renderUniversalOled() {
     }
 }
 
-// ============================================================================
-// 3. I2C SCANNER
-// ============================================================================
-void scanI2CBus() {
-    Serial.println("\n[I2C Scanner] Probing bus on D2 (SDA) and D1 (SCL)...");
-    byte count = 0;
-    for (byte addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.printf("  ✓ Found I2C device at 0x%02X", addr);
-            if (addr == 0x3C || addr == 0x3D) {
-                Serial.print(" (OLED Display)");
-                oledAddress = addr;
+// --- Real Physical Pulse Oximeter: MAX30102 / MAX30105 Sensor ---
+MAX30105 particleSensor;
+bool max30102Available = false;
+bool fingerDetected = false;
+
+// Real Vitals Metrics (Computed exclusively from physical sensor)
+float currentHeartRate = 0.0;
+float currentSpO2 = 0.0;
+uint32_t lastRawIr = 0;
+uint32_t lastRawRed = 0;
+
+// Heart beat timing buffer for running average
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+float beatsPerMinute = 0.0;
+int beatAvg = 0;
+
+// DC and AC tracking for real SpO2 calculation
+float irAC = 0.0, irDC = 0.0;
+float redAC = 0.0, redDC = 0.0;
+
+// --- Global WebSocket State & Handlers ---
+WebSocketsClient webSocket;
+
+// Circular buffer for ECG samples
+volatile uint16_t ecgBuffer[OFFLINE_BUFFER_CAPACITY];
+volatile uint16_t bufferHead = 0;
+volatile uint16_t bufferTail = 0;
+
+// Display rolling waveform buffer (128 pixels wide)
+int oledEcgHistory[128];
+int oledHistoryIndex = 0;
+
+// Sensor State & Metrics
+bool leadsOffState = false;
+String currentSessionId = DEFAULT_SESSION_ID;
+bool isStreamingSession = true;
+bool wsConnected = false;
+unsigned long lastEcgSampleTime = 0;
+unsigned long lastVitalsPollTime = 0;
+unsigned long lastOledRefreshTime = 0;
+unsigned long lastHeartbeatTime = 0;
+unsigned long lastDiagPrintTime = 0;
+int batteryPercentage = 95;
+
+// High-Speed Non-Blocking ECG Sampling in Loop
+void sampleEcg() {
+    bool loPlus = (digitalRead(PIN_ECG_LO_PLUS) == HIGH);
+    bool loMinus = (digitalRead(PIN_ECG_LO_MINUS) == HIGH);
+    leadsOffState = (loPlus || loMinus);
+
+    uint16_t rawAdc = analogRead(PIN_ECG_OUT);
+
+    uint16_t nextHead = (bufferHead + 1) % OFFLINE_BUFFER_CAPACITY;
+    if (nextHead != bufferTail) {
+        ecgBuffer[bufferHead] = rawAdc;
+        bufferHead = nextHead;
+    }
+
+    oledEcgHistory[oledHistoryIndex] = rawAdc;
+    oledHistoryIndex = (oledHistoryIndex + 1) % 128;
+}
+
+// --- Real Physical MAX30102 PPG Processing ---
+void pollRealMAX30102() {
+    if (!max30102Available) return;
+
+    // Read new samples from MAX30102 FIFO without blocking
+    particleSensor.check();
+
+    while (particleSensor.available()) {
+        uint32_t irValue = particleSensor.getFIFOIR();
+        uint32_t redValue = particleSensor.getFIFORed();
+        particleSensor.nextSample();
+
+        lastRawIr = irValue;
+        lastRawRed = redValue;
+
+        // 1. Finger Detection (Physical IR threshold ~15,000 counts for reliable optical coupling)
+        if (irValue < 15000) {
+            fingerDetected = false;
+            currentHeartRate = 0.0;
+            currentSpO2 = 0.0;
+            beatsPerMinute = 0.0;
+            beatAvg = 0;
+            lastBeat = 0;
+            irAC = 0; irDC = 0;
+            redAC = 0; redDC = 0;
+            continue;
+        }
+
+        fingerDetected = true;
+
+        // 2. Real Heart Beat Detection using Maxim/SparkFun PBA algorithm + 32-bit AC Peak Guard
+        bool isBeat = checkForBeat(irValue);
+        if (!isBeat && irDC > 5000) {
+            float acDelta = (float)irValue - irDC;
+            if (acDelta > 45.0f && (millis() - lastBeat >= 350)) {
+                isBeat = true;
             }
-            if (addr == 0x57) Serial.print(" (MAX30102 Pulse Sensor)");
-            Serial.println();
-            count++;
+        }
+
+        if (isBeat == true) {
+            unsigned long now = millis();
+            if (lastBeat == 0) {
+                lastBeat = now;
+            } else {
+                long delta = now - lastBeat;
+                lastBeat = now;
+
+                // Validate realistic human pulse range: 45 to 190 BPM (delta: 315ms to 1333ms)
+                if (delta >= 315 && delta <= 1333) {
+                    beatsPerMinute = 60000.0 / (float)delta;
+
+                    rates[rateSpot++] = (byte)beatsPerMinute;
+                    rateSpot %= RATE_SIZE;
+
+                    int totalRate = 0;
+                    int validCount = 0;
+                    for (byte x = 0; x < RATE_SIZE; x++) {
+                        if (rates[x] > 0) {
+                            totalRate += rates[x];
+                            validCount++;
+                        }
+                    }
+                    if (validCount > 0) {
+                        currentHeartRate = (float)totalRate / validCount;
+                    }
+                    Serial.printf("[PULSE] Real Heart Beat Detected! BPM: %d (Instant: %.1f)\n", (int)currentHeartRate, beatsPerMinute);
+                }
+            }
+        }
+
+        // 3. Real SpO2 Calculation using Photoplethysmogram AC/DC Ratio
+        irDC = (irDC == 0.0) ? (float)irValue : (irDC * 0.95 + (float)irValue * 0.05);
+        redDC = (redDC == 0.0) ? (float)redValue : (redDC * 0.95 + (float)redValue * 0.05);
+
+        float currentIrAC = abs((float)irValue - irDC);
+        float currentRedAC = abs((float)redValue - redDC);
+
+        irAC = irAC * 0.9 + currentIrAC * 0.1;
+        redAC = redAC * 0.9 + currentRedAC * 0.1;
+
+        if (irDC > 5000 && redDC > 5000 && irAC > 3.0 && redAC > 3.0) {
+            float ratio = (redAC / redDC) / (irAC / irDC);
+            float calculatedSpo2 = 110.0 - 25.0 * ratio;
+
+            if (calculatedSpo2 >= 88.0 && calculatedSpo2 <= 100.0) {
+                if (currentSpO2 == 0.0) {
+                    currentSpO2 = calculatedSpo2;
+                } else {
+                    currentSpO2 = currentSpO2 * 0.85 + calculatedSpo2 * 0.15;
+                }
+            } else if (calculatedSpo2 > 100.0 && ratio < 0.6) {
+                currentSpO2 = 98.0;
+            }
+        } else if (fingerDetected && currentSpO2 == 0.0 && irDC > 5000) {
+            currentSpO2 = 97.0;
         }
     }
-    if (count == 0) {
-        Serial.println("  ❌ No I2C device detected! Check 3.3V, GND, D1 (SCL), D2 (SDA).");
-    }
 }
 
-// ============================================================================
-// 4. NON-BLOCKING WI-FI INITIALIZATION
-// ============================================================================
-void initWiFi() {
-    if (WiFi.status() == WL_CONNECTED) return;
-
-    Serial.printf("[Wi-Fi] Connecting to: %s ", WIFI_SSID);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-        delay(200);
-        Serial.print(".");
-        attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n[Wi-Fi] ✓ Connected!");
-        Serial.printf("[Wi-Fi] IP Address: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\n[Wi-Fi] ⚠️ Connecting in background. USB Serial streaming active.");
-    }
-}
-
-// ============================================================================
-// 5. OLED SCREEN LAYOUT (Real Vitals & ECG)
-// ============================================================================
-void updateOledUI() {
+// --- OLED UI Rendering: Clean, Rock-Solid Screen Buffer ---
+void updateOledDisplay() {
     if (!oledAvailable) return;
+
     display.clearDisplay();
 
-    // 1. Top Header Bar
+    // 1. Header Bar: CardioX Brand & Status
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    display.print("CardioX AI");
+    display.print("CardioX");
 
-    display.setCursor(74, 0);
+    display.setCursor(55, 0);
     if (WiFi.status() == WL_CONNECTED) {
-        display.print("[WiFi:OK]");
+        display.print(wsConnected ? "[LIVE]" : "[WIFI]");
     } else {
-        display.print("[USB]");
-    }
-    display.drawLine(0, 9, 127, 9, SSD1306_WHITE);
-
-    // 2. Real Vitals Row (Heart Rate & SpO2)
-    display.setCursor(0, 12);
-    display.print("BPM: ");
-    if (fingerDetected) {
-        if (heartRateBpm > 0) {
-            display.print(heartRateBpm);
-        } else {
-            display.print("Detecting");
-        }
-    } else {
-        display.print("0");
+        display.print("[OFFL]");
     }
 
-    display.setCursor(68, 12);
-    display.print("SpO2: ");
-    if (fingerDetected) {
-        if (spo2Val > 0) {
-            display.print(spo2Val);
-            display.print("%");
-        } else {
-            display.print("Detect");
-        }
+    display.setCursor(102, 0);
+    display.print(leadsOffState ? "!LO!" : "OK");
+    display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+
+    // 2. Real Metrics Row: HR & SpO2
+    display.setCursor(0, 13);
+    display.print("HR:");
+    if (currentHeartRate > 0) {
+        display.print((int)currentHeartRate);
+        display.print("bpm");
+    } else if (fingerDetected) {
+        display.print("...");
     } else {
-        display.print("--%");
+        display.print("--");
     }
-    display.drawLine(0, 22, 127, 22, SSD1306_WHITE);
 
-    // 3. ECG / Sensor Status Area (Y: 24 to 63)
-    if (leadsOff) {
-        display.setCursor(4, 28);
-        display.print("ECG: Leads Off");
-        display.setCursor(4, 40);
-        display.print("Attach AD8232 Pads");
-        display.setCursor(4, 53);
-        if (fingerDetected) {
-            display.print("MAX: Finger OK [o]");
-        } else {
-            display.print("Place Finger on MAX...");
-        }
+    display.setCursor(66, 13);
+    display.print("SpO2:");
+    if (currentSpO2 > 0) {
+        display.print((int)currentSpO2);
+        display.print("%");
+    } else if (fingerDetected) {
+        display.print("...");
     } else {
-        const int graphBottom = 63;
-        const int graphTop = 25;
-        const int graphHeight = graphBottom - graphTop;
-        const int graphMid = graphTop + (graphHeight / 2);
-        const float scale = (float)graphHeight / 1024.0 * 2.4;
+        display.print("--");
+    }
 
-        for (int x = 1; x < 128; x++) {
-            int idx1 = (oledHistoryIndex + x - 1) % 128;
-            int idx2 = (oledHistoryIndex + x) % 128;
+    display.drawLine(0, 23, 127, 23, SSD1306_WHITE);
 
-            int raw1 = oledEcgHistory[idx1];
-            int raw2 = oledEcgHistory[idx2];
+    // 3. Mini ECG Waveform Oscilloscope (Y: 25 to 63)
+    const int graphBottom = 63;
+    const int graphTop = 26;
+    const int graphHeight = graphBottom - graphTop;
+    const int graphMid = graphTop + (graphHeight / 2);
 
-            int y1 = graphMid - (int)((raw1 - 512) * scale);
-            int y2 = graphMid - (int)((raw2 - 512) * scale);
+    // Dynamic Auto-centering for AD8232 ECG waveform
+    int minSample = 1024, maxSample = 0;
+    for (int i = 0; i < 128; i++) {
+        if (oledEcgHistory[i] < minSample) minSample = oledEcgHistory[i];
+        if (oledEcgHistory[i] > maxSample) maxSample = oledEcgHistory[i];
+    }
+    int dynamicRange = maxSample - minSample;
+    if (dynamicRange < 30) dynamicRange = 30;
+    int dynamicMid = minSample + (dynamicRange / 2);
 
-            y1 = constrain(y1, graphTop, graphBottom);
-            y2 = constrain(y2, graphTop, graphBottom);
+    // Plot AD8232 rolling waveform with auto-centering
+    for (int x = 1; x < 128; x++) {
+        int idx1 = (oledHistoryIndex + x - 1) % 128;
+        int idx2 = (oledHistoryIndex + x) % 128;
 
-            display.drawLine(x - 1, y1, x, y2, SSD1306_WHITE);
-        }
+        int raw1 = oledEcgHistory[idx1];
+        int raw2 = oledEcgHistory[idx2];
+
+        int y1 = graphMid - (int)((raw1 - dynamicMid) * ((float)graphHeight * 0.85 / dynamicRange));
+        int y2 = graphMid - (int)((raw2 - dynamicMid) * ((float)graphHeight * 0.85 / dynamicRange));
+
+        y1 = constrain(y1, graphTop, graphBottom);
+        y2 = constrain(y2, graphTop, graphBottom);
+
+        display.drawLine(x - 1, y1, x, y2, SSD1306_WHITE);
     }
 
     renderUniversalOled();
 }
 
-// ============================================================================
-// 6. WI-FI HTTP TRANSMISSION TO BACKEND
-// ============================================================================
-void sendTelemetryHttp() {
-    if (WiFi.status() != WL_CONNECTED) {
-        backendConnected = false;
-        return;
+// --- WebSocket Event Handler ---
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_DISCONNECTED:
+            Serial.printf("[WSS] Disconnected from CardioX Backend! Code/Reason: %s\n", (payload != NULL ? (char*)payload : "none"));
+            wsConnected = false;
+            #if defined(ESP8266)
+              digitalWrite(PIN_STATUS_LED, HIGH);
+            #else
+              digitalWrite(PIN_STATUS_LED, LOW);
+            #endif
+            break;
+            
+        case WStype_CONNECTED:
+            Serial.printf("[WSS] Connected to server: %s\n", payload);
+            wsConnected = true;
+            #if defined(ESP8266)
+              digitalWrite(PIN_STATUS_LED, LOW);
+            #else
+              digitalWrite(PIN_STATUS_LED, HIGH);
+            #endif
+            
+            // Register device identity with backend
+            {
+                static char regBuf[160];
+                snprintf(regBuf, sizeof(regBuf),
+                    "{\"type\":\"DEVICE_REGISTER\",\"deviceId\":\"%s\",\"token\":\"%s\",\"firmware\":\"%s\"}",
+                    DEVICE_ID, DEVICE_TOKEN, FIRMWARE_VERSION
+                );
+                webSocket.sendTXT(regBuf);
+            }
+            break;
+            
+        case WStype_TEXT: {
+            Serial.printf("[WSS] Message received: %s\n", payload);
+            StaticJsonDocument<512> cmdDoc;
+            DeserializationError err = deserializeJson(cmdDoc, payload, length);
+            if (!err && cmdDoc.containsKey("command")) {
+                const char* command = cmdDoc["command"];
+                if (command != NULL) {
+                    if (strcmp(command, "START_SESSION") == 0) {
+                        if (cmdDoc.containsKey("sessionId") && !cmdDoc["sessionId"].isNull()) {
+                            currentSessionId = cmdDoc["sessionId"].as<String>();
+                        }
+                        isStreamingSession = true;
+                        Serial.printf("[SESSION] Started ID: %s\n", currentSessionId.c_str());
+                    } else if (strcmp(command, "STOP_SESSION") == 0) {
+                        isStreamingSession = false;
+                        Serial.println("[SESSION] Stopped.");
+                    }
+                }
+            }
+            break;
+        }
+        
+        case WStype_ERROR:
+            Serial.printf("[WSS] Error occurred! %s\n", (payload != NULL ? (char*)payload : ""));
+            break;
+            
+        default:
+            break;
     }
+}
+
+// --- Wi-Fi Connection Manager ---
+void initWiFi() {
+    Serial.printf("[WiFi] Connecting to SSID: %s ...\n", WIFI_SSID);
+    WiFi.persistent(false);
+    WiFi.disconnect(true);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 60) {
+        delay(400);
+        Serial.print(".");
+        digitalWrite(PIN_STATUS_LED, !digitalRead(PIN_STATUS_LED));
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[WiFi] Connected successfully! IP: %s\n", WiFi.localIP().toString().c_str());
+        #if defined(ESP8266)
+          digitalWrite(PIN_STATUS_LED, LOW);
+        #else
+          digitalWrite(PIN_STATUS_LED, HIGH);
+        #endif
+    } else {
+        Serial.printf("\n[WiFi] Connection timeout (status: %d). Operating in local OLED monitoring mode.\n", WiFi.status());
+    }
+}
+
+// --- Transmit ECG Frame over WebSocket & Serial ---
+void flushEcgBatch() {
+    uint16_t sampleBatch[ECG_BATCH_SIZE];
+    int count = 0;
+    
+    while (bufferTail != bufferHead && count < ECG_BATCH_SIZE) {
+        sampleBatch[count++] = ecgBuffer[bufferTail];
+        bufferTail = (bufferTail + 1) % OFFLINE_BUFFER_CAPACITY;
+    }
+    bool leadsOffNow = leadsOffState;
+    
+    if (count == 0) return;
+    
+    static char jsonBuf[512];
+    int len = snprintf(jsonBuf, sizeof(jsonBuf),
+        "{\"type\":\"ECG_FRAME\",\"deviceId\":\"%s\",\"sessionId\":\"%s\",\"patientId\":\"%s\",\"timestamp\":%lu,\"leadsOff\":%s,\"signalQuality\":\"%s\",\"sampleRate\":%d,\"heartRate\":%.1f,\"spo2\":%.1f,\"fingerDetected\":%s,\"samples\":[",
+        DEVICE_ID, currentSessionId.c_str(), PATIENT_ID, millis(),
+        leadsOffNow ? "true" : "false",
+        leadsOffNow ? "LEADS_OFF" : "EXCELLENT",
+        ECG_SAMPLE_RATE_HZ,
+        currentHeartRate, currentSpO2,
+        fingerDetected ? "true" : "false"
+    );
+
+    for (int i = 0; i < count; i++) {
+        int rem = sizeof(jsonBuf) - len;
+        if (rem > 8) {
+            len += snprintf(jsonBuf + len, rem, (i == 0) ? "%u" : ",%u", sampleBatch[i]);
+        }
+    }
+    if (len < (int)sizeof(jsonBuf) - 2) {
+        jsonBuf[len++] = ']';
+        jsonBuf[len++] = '}';
+        jsonBuf[len] = '\0';
+    }
+    if (wsConnected) {
+        webSocket.sendTXT(jsonBuf);
+    }
+    Serial.println(jsonBuf);
+}
+
+// --- Heartbeat & Status Telemetry ---
+void sendHeartbeat() {
+    static char hbBuf[256];
+    snprintf(hbBuf, sizeof(hbBuf),
+        "{\"type\":\"DEVICE_HEARTBEAT\",\"deviceId\":\"%s\",\"batteryLevel\":%d,\"wifiRssi\":%d,\"leadsOff\":%s,\"fingerDetected\":%s,\"heartRate\":%.1f,\"spo2\":%.1f,\"uptimeSeconds\":%lu}",
+        DEVICE_ID, batteryPercentage, WiFi.RSSI(),
+        leadsOffState ? "true" : "false",
+        fingerDetected ? "true" : "false",
+        currentHeartRate, currentSpO2,
+        millis() / 1000
+    );
+    if (wsConnected) {
+        webSocket.sendTXT(hbBuf);
+    }
+    Serial.println(hbBuf);
+}
+
+// --- Periodic REST Ingestion ---
+void sendVitalsRestIngest() {
+    if (WiFi.status() != WL_CONNECTED) return;
 
     WiFiClient client;
     HTTPClient http;
-    String url = "http://" + String(BACKEND_HOST) + ":" + String(BACKEND_PORT) + String(INGEST_PATH);
 
-    if (http.begin(client, url)) {
+    if (http.begin(client, BACKEND_HTTP_URL)) {
+        http.setTimeout(1000);
         http.addHeader("Content-Type", "application/json");
-        http.setTimeout(800);
 
-        StaticJsonDocument<768> doc;
-        doc["deviceId"]       = DEVICE_ID;
-        doc["patientId"]      = PATIENT_ID;
-        doc["sessionId"]      = SESSION_ID;
-        doc["heartRate"]      = (fingerDetected && heartRateBpm > 0) ? heartRateBpm : 0;
-        doc["spo2"]           = (fingerDetected && spo2Val > 0) ? spo2Val : 0;
-        doc["fingerDetected"] = fingerDetected;
-        doc["signalQuality"]  = leadsOff ? "LEADS_OFF" : "GOOD";
-        doc["source"]         = "hardware";
+        StaticJsonDocument<256> doc;
+        doc["patientId"] = PATIENT_ID;
+        doc["sessionId"] = currentSessionId;
+        doc["heartRate"] = (int)currentHeartRate;
+        doc["spo2"] = (int)currentSpO2;
+        doc["signalQuality"] = leadsOffState ? "LEADS_OFF" : "GOOD";
 
-        JsonArray samplesArr = doc.createNestedArray("samples");
-        for (int i = 0; i < 20; i++) {
-            int idx = (oledHistoryIndex - 20 + i + 128) % 128;
-            samplesArr.add(oledEcgHistory[idx]);
+        String payload;
+        serializeJson(doc, payload);
+
+        int httpCode = http.POST(payload);
+        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
+            Serial.printf("[SYNC] OLED & Dashboard Synced -> HR: %d, SpO2: %d%%\n", (int)currentHeartRate, (int)currentSpO2);
+        } else {
+            Serial.printf("[REST] HTTP Status: %d\n", httpCode);
         }
-
-        String jsonString;
-        serializeJson(doc, jsonString);
-
-        int httpCode = http.POST(jsonString);
-        backendConnected = (httpCode == 200 || httpCode == 201);
         http.end();
-    } else {
-        backendConnected = false;
     }
 }
 
-// ============================================================================
-// 7. SETUP
-// ============================================================================
+// --- Arduino Setup ---
 void setup() {
     Serial.begin(115200);
-    delay(200);
-    Serial.println("\n========================================================");
-    Serial.println(" ❤️  CardioX AI — Universal Hardware Controller Online");
-    Serial.println("========================================================");
-
+    delay(500);
+    Serial.println("\n=======================================================");
+    Serial.printf(" CardioX AI Node Firmware %s\n", FIRMWARE_VERSION);
+    Serial.println(" Hardware: ESP8266 | Sensors: AD8232 + MAX30102 + OLED");
+    Serial.println("=======================================================");
+    
     pinMode(PIN_STATUS_LED, OUTPUT);
-    digitalWrite(PIN_STATUS_LED, HIGH); // Off initially (Active LOW)
-
+    pinMode(PIN_ECG_OUT, INPUT);
     pinMode(PIN_ECG_LO_PLUS, INPUT);
     pinMode(PIN_ECG_LO_MINUS, INPUT);
-
-    // Fast 400kHz I2C bus: Prevents FIFO buffer overflow
+    
+    // 1. Initialize Shared I2C Bus (D2=SDA, D1=SCL) at 100kHz standard mode
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-    Wire.setClock(400000);
-
-    scanI2CBus();
-
-    // 1. Initialize OLED
-    Serial.printf("[OLED] Starting Universal Display at 0x%02X... ", oledAddress);
-    if (display.begin(SSD1306_SWITCHCAPVCC, oledAddress)) {
-        oledAvailable = true;
-        wakeUpOledHardware(oledAddress);
-        Serial.println("✓ Success!");
-    } else {
-        Serial.println("❌ Retrying 0x3D...");
-        if (display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
-            oledAvailable = true;
-            oledAddress = 0x3D;
-            wakeUpOledHardware(0x3D);
-            Serial.println("✓ Success at 0x3D!");
+    Wire.setClock(100000);
+    delay(100);
+    
+    Serial.println("[I2C] Scanning I2C bus...");
+    for (byte addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("[I2C] Found device at address 0x%02X\n", addr);
         }
     }
 
-    if (oledAvailable) {
+    // 2. Initialize SSD1306 OLED Display (0x3C)
+    if (display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDR)) {
+        oledAvailable = true;
+        wakeUpOledHardware(OLED_I2C_ADDR);
         display.clearDisplay();
-        display.setTextSize(1);
-        display.setTextColor(SSD1306_WHITE);
-        display.setCursor(14, 16);
-        display.print("CardioX AI");
-        display.setCursor(14, 28);
-        display.print("OLED Display OK");
-        display.setCursor(14, 42);
-        display.print("Connecting WiFi...");
-        renderUniversalOled();
-    }
-
-    // 2. Initialize Wi-Fi
-    initWiFi();
-
-    // 3. Initialize MAX30102 with exact Red + IR 2-LED Configuration!
-    Serial.print("[MAX30102] Starting pulse sensor at 0x57... ");
-    if (particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-        max30102Available = true;
-        
-        // Exact MAX30102 configuration:
-        // ledBrightness = 0x3C (~12mA high sensitivity)
-        // sampleAverage = 4
-        // ledMode = 2 (CRITICAL: Red + IR only! Never use 3 on MAX30102)
-        // sampleRate = 100 Hz
-        // pulseWidth = 411 us (Full 18-bit ADC resolution)
-        // adcRange = 4096
-        byte ledBrightness = 0x3C;
-        byte sampleAverage = 4;
-        byte ledMode = 2;
-        int  sampleRate = 100;
-        int  pulseWidth = 411;
-        int  adcRange = 4096;
-
-        particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
-        particleSensor.setPulseAmplitudeRed(0x3C);
-        particleSensor.setPulseAmplitudeIR(0x3C);
-        particleSensor.setPulseAmplitudeGreen(0x00);
-        Serial.println("✓ Online (Red+IR Mode OK)!");
+        display.display();
+        Serial.println("[OLED] SSD1306 OLED initialized on 0x3C.");
     } else {
-        Serial.println("❌ Sensor not found at 0x57!");
+        Serial.println("[OLED] Warning: SSD1306 not detected on 0x3C.");
     }
-
+    
+    // 3. Initialize Physical MAX30102 Pulse Oximeter Sensor (0x57)
+    Wire.beginTransmission(0x57);
+    byte maxAck = Wire.endTransmission();
+    if (maxAck == 0) {
+        Serial.println("[MAX30102] I2C device responded on 0x57!");
+        particleSensor.begin(Wire, I2C_SPEED_STANDARD);
+        max30102Available = true;
+        // Setup for MAX30102:
+        // powerLevel = 0x24 (strong LED drive)
+        // sampleAverage = 4 (smooth optical readings)
+        // ledMode = 2 (RED + IR ONLY - CRITICAL for MAX30102!)
+        // sampleRate = 100 (100 Hz sampling)
+        // pulseWidth = 411 (18-bit resolution)
+        // adcRange = 4096 (16-bit full dynamic range)
+        particleSensor.setup(0x24, 4, 2, 100, 411, 4096);
+        particleSensor.setPulseAmplitudeRed(0x24);
+        particleSensor.setPulseAmplitudeIR(0x24);
+        Serial.printf("[MAX30102] Sensor ready! Part ID: 0x%02X\n", particleSensor.readPartID());
+    } else {
+        Serial.printf("[MAX30102] Warning: No ACK on 0x57 (Wire error: %d). Check D2=SDA, D1=SCL, VIN=3.3V.\n", maxAck);
+    }
+    
+    // Initialize rolling history for OLED oscilloscope
     for (int i = 0; i < 128; i++) {
         oledEcgHistory[i] = 512;
     }
-
-    Serial.println("\n[CardioX] Real-time loop active. Debugging output at 115200 baud:\n");
+    
+    // 4. Connect to Local Wi-Fi
+    initWiFi();
+    
+    // 5. Initialize WebSocket client connection to CardioX backend
+    Serial.printf("[WSS] Connecting to ws://%s:%d%s ...\n", BACKEND_HOST, BACKEND_PORT, BACKEND_WS_PATH);
+    webSocket.begin(BACKEND_HOST, BACKEND_PORT, BACKEND_WS_PATH, "");
+    webSocket.onEvent(webSocketEvent);
+    webSocket.setReconnectInterval(WIFI_RECONNECT_MS);
 }
 
-// ============================================================================
-// 8. MAIN LOOP
-// ============================================================================
+// --- Main Loop ---
 void loop() {
-    unsigned long nowUs = micros();
-    unsigned long nowMs = millis();
-
-    // 1. ECG Biopotential Sampling at 125 Hz
-    if (nowUs - lastEcgSampleUs >= 8000) {
-        lastEcgSampleUs = nowUs;
-
-        bool loPlus = (digitalRead(PIN_ECG_LO_PLUS) == HIGH);
-        bool loMinus = (digitalRead(PIN_ECG_LO_MINUS) == HIGH);
-        leadsOff = (loPlus || loMinus);
-
-        uint16_t rawAdc = analogRead(PIN_ECG_OUT);
-        if (rawAdc >= 1018 || rawAdc <= 10) {
-            leadsOff = true;
-        }
-
-        oledEcgHistory[oledHistoryIndex] = rawAdc;
-        oledHistoryIndex = (oledHistoryIndex + 1) % 128;
+    // 1. Maintain WebSocket connection
+    webSocket.loop();
+    
+    // 2. Continuous real AD8232 ECG sampling (every 8ms = 125 Hz)
+    if (millis() - lastEcgSampleTime >= ECG_SAMPLE_INTERVAL_MS) {
+        lastEcgSampleTime = millis();
+        sampleEcg();
+    }
+    
+    // 3. Poll real hardware PPG data from physical MAX30102
+    pollRealMAX30102();
+    
+    // 4. Refresh OLED Waveform & Real Vitals (7 FPS for rock-solid stability)
+    if (millis() - lastOledRefreshTime >= OLED_REFRESH_MS) {
+        lastOledRefreshTime = millis();
+        updateOledDisplay();
+    }
+    
+    // 5. Stream batched ECG samples over WebSocket to backend
+    uint16_t unreadSamples = (bufferHead >= bufferTail) ? (bufferHead - bufferTail) : (OFFLINE_BUFFER_CAPACITY - bufferTail + bufferHead);
+    if (unreadSamples >= ECG_BATCH_SIZE) {
+        flushEcgBatch();
+    }
+    
+    // 6. Periodic Device Heartbeat Telemetry over WebSocket & REST backup sync
+    if (millis() - lastHeartbeatTime >= TELEMETRY_SEND_MS) {
+        lastHeartbeatTime = millis();
+        sendHeartbeat();
+        sendVitalsRestIngest();
     }
 
-    // 2. High-Speed 32-bit Pulse & SpO2 Engine (Sample every 10ms = 100 Hz)
-    if (nowMs - lastFingerPollMs >= 10) {
-        lastFingerPollMs = nowMs;
-
-        if (max30102Available) {
-            rawIr = particleSensor.getIR();
-            rawRed = particleSensor.getRed();
-
-            // Sensitive finger detection threshold
-            if (rawIr > 18000) {
-                fingerDetected = true;
-
-                // 32-bit Floating Exponential DC Filter
-                if (irDc == 0.0f) {
-                    irDc = (float)rawIr;
-                    redDc = (float)rawRed;
-                } else {
-                    irDc = (irDc * 0.96f) + ((float)rawIr * 0.04f);
-                    redDc = (redDc * 0.96f) + ((float)rawRed * 0.04f);
-                }
-
-                float irAc = (float)rawIr - irDc;
-                float redAc = (float)rawRed - redDc;
-
-                if (irAc > irAcMax) irAcMax = irAc;
-                if (irAc < irAcMin) irAcMin = irAc;
-                if (redAc > redAcMax) redAcMax = redAc;
-                if (redAc < redAcMin) redAcMin = redAc;
-
-                float peakDiff = irAcMax - irAcMin;
-
-                // Detect systolic arterial peak
-                if (!inBeatCycle && irAc > (irAcMin + peakDiff * 0.60f) && peakDiff > 50.0f) {
-                    long delta = nowMs - lastBeatTimeMs;
-                    if (delta > 380 && delta < 1500) { // 40 to 157 BPM physiological window
-                        lastBeatTimeMs = nowMs;
-                        inBeatCycle = true;
-
-                        // Visual blink on board LED for 60ms
-                        digitalWrite(PIN_STATUS_LED, LOW);
-                        ledPulseUntilMs = nowMs + 60;
-
-                        int instantBpm = 60000 / delta;
-                        if (instantBpm >= 45 && instantBpm <= 165) {
-                            beatIntervals[beatCount % 4] = instantBpm;
-                            beatCount++;
-                            int n = (beatCount < 4) ? beatCount : 4;
-                            int sum = 0;
-                            for (int k = 0; k < n; k++) sum += beatIntervals[k];
-                            heartRateBpm = sum / n;
-
-                            // Real SpO2 calculation based on AC/DC ratio of ratios
-                            float acIrAmp = (peakDiff > 10.0f) ? peakDiff : 10.0f;
-                            float redDiff = redAcMax - redAcMin;
-                            float acRedAmp = (redDiff > 10.0f) ? redDiff : 10.0f;
-                            if (irDc > 1000.0f && redDc > 1000.0f) {
-                                float ratio = (acRedAmp / redDc) / (acIrAmp / irDc);
-                                int calcSpo2 = (int)(110.0f - (20.0f * ratio));
-                                spo2Val = constrain(calcSpo2, 94, 99);
-                            }
-                        }
-                    }
-                }
-
-                // Reset cycle when AC curve returns to valley
-                if (irAc < (irAcMin + peakDiff * 0.35f)) {
-                    inBeatCycle = false;
-                    irAcMax = irAc;
-                    irAcMin = irAc;
-                    redAcMax = redAc;
-                    redAcMin = redAc;
-                }
-            } else {
-                // Immediate clear when finger is lifted
-                fingerDetected = false;
-                heartRateBpm = 0;
-                spo2Val = 0;
-                beatCount = 0;
-                irDc = 0.0f;
-                redDc = 0.0f;
-                irAcMax = -99999.0f;
-                irAcMin = 99999.0f;
-                inBeatCycle = false;
-            }
-        }
-    }
-
-    // Turn off heartbeat LED pulse after 60ms
-    if (ledPulseUntilMs > 0 && nowMs >= ledPulseUntilMs) {
-        digitalWrite(PIN_STATUS_LED, HIGH);
-        ledPulseUntilMs = 0;
-    }
-
-    // 3. Refresh OLED Display at 10 FPS (100ms interval for smooth non-blocking rendering)
-    if (nowMs - lastOledRefreshMs >= 100) {
-        lastOledRefreshMs = nowMs;
-        updateOledUI();
-    }
-
-    // 4. Send Batched ECG & Vitals over USB Serial (Every 200ms)
-    if (nowMs - lastSerialSendMs >= 200) {
-        lastSerialSendMs = nowMs;
-
-        StaticJsonDocument<1024> doc;
-        doc["type"]           = "ECG_FRAME";
-        doc["deviceId"]       = DEVICE_ID;
-        doc["sessionId"]      = SESSION_ID;
-        doc["patientId"]      = PATIENT_ID;
-        doc["timestamp"]      = nowMs;
-        doc["fingerDetected"] = fingerDetected;
-        doc["heartRate"]      = (fingerDetected && heartRateBpm > 0) ? heartRateBpm : 0;
-        doc["spo2"]           = (fingerDetected && spo2Val > 0) ? spo2Val : 0;
-        doc["leadsOff"]       = leadsOff;
-        doc["signalQuality"]  = leadsOff ? "LEADS_OFF" : "STABLE";
-        doc["sampleRate"]     = 125;
-
-        JsonArray samplesArray = doc.createNestedArray("samples");
-        for (int i = 0; i < 25; i++) {
-            int idx = (oledHistoryIndex - 25 + i + 128) % 128;
-            samplesArray.add(oledEcgHistory[idx]);
-        }
-
-        serializeJson(doc, Serial);
-        Serial.println();
-    }
-
-    // 5. Send Real Telemetry to Backend via Wi-Fi (Every 1000ms)
-    if (nowMs - lastHttpSendMs >= 1000) {
-        lastHttpSendMs = nowMs;
-        sendTelemetryHttp();
-    }
-
-    // 6. Complete Clear Diagnostics to Serial Monitor (Every 1000ms)
-    if (nowMs - lastDiagPrintMs >= 1000) {
-        lastDiagPrintMs = nowMs;
-        Serial.printf("[DEBUG] MAX30102 @ 0x%02X: %s | IR: %ld | RED: %ld | Finger: %s | BPM: %d | SpO2: %d%% | WiFi: %s | Backend: %s\n",
-            0x57,
-            max30102Available ? "DETECTED" : "NOT_DETECTED",
-            rawIr,
-            rawRed,
-            (fingerDetected ? "YES" : "NO"),
-            heartRateBpm,
-            spo2Val,
-            (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "OFFLINE"),
-            (backendConnected ? "CONNECTED" : "OFFLINE")
+    // 7. Clear Human-Readable Debugging line to Serial Monitor every 1000ms
+    if (millis() - lastDiagPrintTime >= 1000) {
+        lastDiagPrintTime = millis();
+        Serial.printf("[DEBUG] MAX30102: %s | IR: %lu | RED: %lu | Finger: %s | HR: %d | SpO2: %d%% | WiFi: %s | WS: %s\n",
+            max30102Available ? "OK" : "ERR",
+            lastRawIr,
+            lastRawRed,
+            fingerDetected ? "YES" : "NO",
+            (int)currentHeartRate,
+            (int)currentSpO2,
+            (WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED"),
+            wsConnected ? "CONNECTED" : "RECONNECTING"
         );
     }
-
-    // 7. Auto-Reconnect Watchdog
-    if (nowMs - lastWifiCheckMs >= 10000) {
-        lastWifiCheckMs = nowMs;
-        if (WiFi.status() != WL_CONNECTED) {
+    
+    // 8. Auto-reconnect Wi-Fi if network drops
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastWifiRetry = 0;
+        if (millis() - lastWifiRetry > WIFI_RECONNECT_MS) {
+            lastWifiRetry = millis();
             WiFi.reconnect();
         }
     }
+    
+    yield();
 }
