@@ -482,14 +482,15 @@ void loop() {
                         if (instantBpm >= 45 && instantBpm <= 165) {
                             beatIntervals[beatCount % 4] = instantBpm;
                             beatCount++;
-                            int n = min(beatCount, 4);
+                            int n = (beatCount < 4) ? beatCount : 4;
                             int sum = 0;
                             for (int k = 0; k < n; k++) sum += beatIntervals[k];
                             heartRateBpm = sum / n;
 
                             // Real SpO2 calculation based on AC/DC ratio of ratios
-                            float acIrAmp = max(10.0f, peakDiff);
-                            float acRedAmp = max(10.0f, redAcMax - redAcMin);
+                            float acIrAmp = (peakDiff > 10.0f) ? peakDiff : 10.0f;
+                            float redDiff = redAcMax - redAcMin;
+                            float acRedAmp = (redDiff > 10.0f) ? redDiff : 10.0f;
                             if (irDc > 1000.0f && redDc > 1000.0f) {
                                 float ratio = (acRedAmp / redDc) / (acIrAmp / irDc);
                                 int calcSpo2 = (int)(110.0f - (20.0f * ratio));
