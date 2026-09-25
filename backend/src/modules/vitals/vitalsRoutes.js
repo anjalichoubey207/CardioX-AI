@@ -66,23 +66,26 @@ router.post('/ingest', (req, res) => {
   const hub = req.app.locals.realtimeHub;
   if (hub) {
     hub.lastHardwarePacketTime = Date.now();
+    hub.isHardwareActive = true;
+    const hasValidHr = (heartRate > 0);
     const frame = {
       type: 'ECG_FRAME',
-      deviceId: 'DX-ESP8266-001',
+      deviceId: req.body.deviceId || 'DX-ESP8266-001',
       sessionId: sessionId || 'sess-001',
       patientId,
       timestamp: Date.now(),
       leadsOff: signalQuality === 'LEADS_OFF',
       signalQuality,
-      heartRate: Math.round(heartRate),
-      spo2: Math.round(spo2),
-      fingerDetected: true,
-      samples: []
+      heartRate: hasValidHr ? Math.round(heartRate) : 0,
+      spo2: (spo2 > 0) ? Math.round(spo2) : 0,
+      fingerDetected: (req.body.fingerDetected !== undefined) ? Boolean(req.body.fingerDetected) : hasValidHr,
+      samples: (req.body.samples && Array.isArray(req.body.samples)) ? req.body.samples : []
     };
     hub.broadcast(`patient:${patientId}`, frame);
     if (sessionId) {
       hub.broadcast(`session:${sessionId}`, frame);
     }
+    hub.broadcastAll(frame);
   }
 
   res.status(201).json({ status: 'INGESTED', timestamp: ts });
