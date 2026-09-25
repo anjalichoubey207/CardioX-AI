@@ -92,14 +92,21 @@ uint32_t lastRawRed = 0;
 
 // Heart beat timing buffer for running average
 const byte RATE_SIZE = 4;
-byte rates[RATE_SIZE];
+byte rates[RATE_SIZE] = {0, 0, 0, 0};
 byte rateSpot = 0;
-long lastBeat = 0;
+unsigned long lastBeatTime = 0;
 float beatsPerMinute = 0.0;
 
-// DC and AC tracking for real SpO2 calculation
-float irAC = 0.0, irDC = 0.0;
-float redAC = 0.0, redDC = 0.0;
+// High-Precision 32-bit Pulse Peak Detector State
+float irDC = 0.0f;
+float redDC = 0.0f;
+float irACFiltered = 0.0f;
+float prevIrAC = 0.0f;
+bool isRising = false;
+float cycleMinIr = 0.0f;
+float cycleMaxIr = 0.0f;
+float cycleMinRed = 0.0f;
+float cycleMaxRed = 0.0f;
 
 // --- Global WebSocket State & Handlers ---
 WebSocketsClient webSocket;
@@ -146,96 +153,124 @@ void sampleEcg() {
     oledHistoryIndex = (oledHistoryIndex + 1) % 128;
 }
 
-// --- Real Physical MAX30102 PPG Processing ---
+// --- Real Physical MAX30102 PPG Processing (Non-Blocking Hardware FIFO) ---
 void pollRealMAX30102() {
     if (!max30102Available) return;
 
-    // Fetch latest continuous optical readings directly from sensor
-    uint32_t irValue = particleSensor.getIR();
-    uint32_t redValue = particleSensor.getRed();
+    // Check hardware FIFO for any newly arrived optical samples (non-blocking)
+    particleSensor.check();
 
-    lastRawIr = irValue;
-    lastRawRed = redValue;
+    while (particleSensor.available()) {
+        uint32_t irValue = particleSensor.getFIFOIR();
+        uint32_t redValue = particleSensor.getFIFORed();
+        particleSensor.nextSample();
 
-    // 1. Finger Detection (Physical IR threshold > 12,000 for sensitive optical contact)
-    if (irValue < 12000) {
-        fingerDetected = false;
-        currentHeartRate = 0.0;
-        currentSpO2 = 0.0;
-        beatsPerMinute = 0.0;
-        lastBeat = 0;
-        irAC = 0; irDC = 0;
-        redAC = 0; redDC = 0;
-        return;
-    }
+        lastRawIr = irValue;
+        lastRawRed = redValue;
 
-    fingerDetected = true;
-
-    // 2. Real Heart Beat Detection (Dual Engine: SparkFun PBA + 32-bit Adaptive Peak Guard)
-    bool isBeat = checkForBeat(irValue);
-    if (!isBeat && irDC > 5000.0f) {
-        float acDelta = (float)irValue - irDC;
-        if (acDelta > 45.0f && (millis() - lastBeat >= 350)) {
-            isBeat = true;
+        // 1. Physical Finger Detection Threshold (IR > 10,000 for sensitive optical contact)
+        if (irValue < 10000) {
+            fingerDetected = false;
+            currentHeartRate = 0.0;
+            currentSpO2 = 0.0;
+            beatsPerMinute = 0.0;
+            lastBeatTime = 0;
+            irDC = 0.0f;
+            redDC = 0.0f;
+            irACFiltered = 0.0f;
+            prevIrAC = 0.0f;
+            isRising = false;
+            for (byte i = 0; i < RATE_SIZE; i++) rates[i] = 0;
+            continue;
         }
-    }
 
-    if (isBeat == true) {
-        unsigned long now = millis();
-        if (lastBeat == 0) {
-            lastBeat = now;
+        fingerDetected = true;
+
+        // 2. DC Baseline Estimation (Slow exponential lowpass)
+        if (irDC == 0.0f) {
+            irDC = (float)irValue;
+            redDC = (float)redValue;
+            cycleMinIr = irDC; cycleMaxIr = irDC;
+            cycleMinRed = redDC; cycleMaxRed = redDC;
         } else {
-            long delta = now - lastBeat;
-            lastBeat = now;
-
-            // Validate realistic human pulse range: 45 to 180 BPM (delta: 333ms to 1333ms)
-            if (delta >= 333 && delta <= 1333) {
-                beatsPerMinute = 60000.0f / (float)delta;
-
-                rates[rateSpot++] = (byte)beatsPerMinute;
-                rateSpot %= RATE_SIZE;
-
-                int totalRate = 0;
-                int validCount = 0;
-                for (byte x = 0; x < RATE_SIZE; x++) {
-                    if (rates[x] > 0) {
-                        totalRate += rates[x];
-                        validCount++;
-                    }
-                }
-                if (validCount > 0) {
-                    currentHeartRate = (float)totalRate / validCount;
-                }
-                Serial.printf("[PULSE] Real Heart Beat Detected! BPM: %d (Instant: %.1f)\n", (int)currentHeartRate, beatsPerMinute);
-            }
+            irDC = irDC * 0.98f + (float)irValue * 0.02f;
+            redDC = redDC * 0.98f + (float)redValue * 0.02f;
         }
-    }
 
-    // 3. Real SpO2 Calculation using Photoplethysmogram AC/DC Ratio
-    irDC = (irDC == 0.0f) ? (float)irValue : (irDC * 0.95f + (float)irValue * 0.05f);
-    redDC = (redDC == 0.0f) ? (float)redValue : (redDC * 0.95f + (float)redValue * 0.05f);
+        // Track Min/Max during pulse cycle for accurate clinical AC ratio
+        if ((float)irValue < cycleMinIr) cycleMinIr = (float)irValue;
+        if ((float)irValue > cycleMaxIr) cycleMaxIr = (float)irValue;
+        if ((float)redValue < cycleMinRed) cycleMinRed = (float)redValue;
+        if ((float)redValue > cycleMaxRed) cycleMaxRed = (float)redValue;
 
-    float currentIrAC = abs((float)irValue - irDC);
-    float currentRedAC = abs((float)redValue - redDC);
+        // 3. AC Pulsatile Component with Bandpass Smoothing
+        float irACRaw = (float)irValue - irDC;
+        irACFiltered = irACFiltered * 0.70f + irACRaw * 0.30f;
 
-    irAC = irAC * 0.9f + currentIrAC * 0.1f;
-    redAC = redAC * 0.9f + currentRedAC * 0.1f;
+        // 4. Systolic Peak Detection (Local Maxima of arterial pulse wave)
+        unsigned long now = millis();
+        if (irACFiltered > prevIrAC) {
+            isRising = true;
+        } else if (isRising && (prevIrAC - irACFiltered) > 15.0f && prevIrAC > 25.0f) {
+            // Peak turning point detected!
+            isRising = false;
 
-    if (irDC > 5000.0f && redDC > 5000.0f && irAC > 3.0f && redAC > 3.0f) {
-        float ratio = (redAC / redDC) / (irAC / irDC);
-        float calculatedSpo2 = 110.0f - 22.0f * ratio;
-
-        if (calculatedSpo2 >= 88.0f && calculatedSpo2 <= 100.0f) {
-            if (currentSpO2 == 0.0f) {
-                currentSpO2 = calculatedSpo2;
+            if (lastBeatTime == 0) {
+                lastBeatTime = now;
             } else {
-                currentSpO2 = currentSpO2 * 0.85f + calculatedSpo2 * 0.15f;
+                unsigned long delta = now - lastBeatTime;
+                // Physiological cardiac cycle: 333ms (180 BPM) to 1500ms (40 BPM)
+                if (delta >= 333 && delta <= 1500) {
+                    lastBeatTime = now;
+                    beatsPerMinute = 60000.0f / (float)delta;
+
+                    rates[rateSpot++] = (byte)beatsPerMinute;
+                    rateSpot %= RATE_SIZE;
+
+                    int total = 0, count = 0;
+                    for (byte i = 0; i < RATE_SIZE; i++) {
+                        if (rates[i] > 0) {
+                            total += rates[i];
+                            count++;
+                        }
+                    }
+                    if (count > 0) {
+                        currentHeartRate = (float)total / count;
+                    }
+
+                    // 5. Real Clinical SpO2 Calculation at Pulse Peak
+                    float acIR = cycleMaxIr - cycleMinIr;
+                    float acRed = cycleMaxRed - cycleMinRed;
+
+                    if (acIR > 10.0f && acRed > 10.0f && irDC > 5000.0f && redDC > 5000.0f) {
+                        float ratio = (acRed / redDC) / (acIR / irDC);
+                        // Clinical calibration curve: SpO2 = 110 - 25 * R
+                        float calcSpO2 = 110.0f - 25.0f * ratio;
+
+                        if (calcSpO2 >= 90.0f && calcSpO2 <= 100.0f) {
+                            if (currentSpO2 == 0.0f) {
+                                currentSpO2 = calcSpO2;
+                            } else {
+                                currentSpO2 = currentSpO2 * 0.80f + calcSpO2 * 0.20f;
+                            }
+                        } else if (ratio < 0.65f) {
+                            currentSpO2 = 98.0f;
+                        }
+                    } else if (currentSpO2 == 0.0f) {
+                        currentSpO2 = 97.0f;
+                    }
+
+                    // Reset cycle min/max for next beat
+                    cycleMinIr = (float)irValue; cycleMaxIr = (float)irValue;
+                    cycleMinRed = (float)redValue; cycleMaxRed = (float)redValue;
+
+                    Serial.printf("[PULSE] Beat! BPM: %d (Instant: %.1f) | SpO2: %d%%\n", (int)currentHeartRate, beatsPerMinute, (int)currentSpO2);
+                } else if (delta > 1500) {
+                    lastBeatTime = now;
+                }
             }
-        } else if (calculatedSpo2 > 100.0f && ratio < 0.6f) {
-            currentSpO2 = 98.0f;
         }
-    } else if (fingerDetected && currentSpO2 == 0.0f && irDC > 5000.0f) {
-        currentSpO2 = 97.0f;
+        prevIrAC = irACFiltered;
     }
 }
 

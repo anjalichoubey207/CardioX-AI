@@ -226,6 +226,11 @@ function startHardwareSerialBridge() {
 
       for (const line of lines) {
         const trimmed = line.trim();
+        if (trimmed.length > 0 && !trimmed.startsWith('{')) {
+          if (trimmed.includes('[DEBUG]') || trimmed.includes('[PULSE]') || trimmed.includes('BRIDGE')) {
+            console.log('[SERIAL MONITOR]:', trimmed);
+          }
+        }
         if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
 
         try {
@@ -236,6 +241,7 @@ function startHardwareSerialBridge() {
             realtimeHub.handleEcgFrame(parsed, true);
           } else if (parsed.type === 'DEVICE_HEARTBEAT') {
             lastSerialPacketTime = Date.now();
+            console.log(`[HARDWARE TELEMETRY] Heartbeat: HR=${parsed.heartRate} SpO2=${parsed.spo2}% Finger=${parsed.fingerDetected}`);
             realtimeHub.broadcast(`device:${parsed.deviceId}`, parsed);
             realtimeHub.broadcastAll(parsed);
           }

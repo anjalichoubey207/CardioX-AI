@@ -6,8 +6,8 @@ param(
 $port = New-Object System.IO.Ports.SerialPort $PortName, $BaudRate, 'None', 8, 'One'
 $port.ReadTimeout = 3000
 $port.WriteTimeout = 3000
-$port.DtrEnable = $false
-$port.RtsEnable = $false
+$port.DtrEnable = $true
+$port.RtsEnable = $true
 
 try {
     $port.Open()
