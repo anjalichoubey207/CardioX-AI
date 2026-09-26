@@ -446,6 +446,7 @@ function applyAuthSession(auth) {
   loadPatients();
   loadNotes();
   loadPatientHistory(currentPatientId);
+  fetchInitialAlerts();
 }
 
 function handleLogout() {
@@ -620,6 +621,12 @@ function handleIncomingTelemetry(frame) {
     if (!frame.patientId || frame.patientId === currentPatientId) {
       updateAiDashboardCard(frame.evaluation);
     }
+    return;
+  }
+
+  // 1.2 Live Real-Time Physical Hardware Clinical Alert
+  if (frame.type === 'ALERT_NOTIFICATION' && frame.alert) {
+    handleIncomingAlert(frame.alert);
     return;
   }
 
@@ -1853,6 +1860,225 @@ async function triggerAiRecheck() {
     },
     doctorSummary: `Telemetry screening reflects ${localRisk} risk tier with pulse at ${liveHrNum || 75} BPM and SpO₂ at ${liveSpo2Num || 98}%. AI-assisted screening only. Not a medical diagnosis.`
   });
+}
+
+// ==========================================================
+// 6.6 Real-Time Physical Sensor Clinical Alert System
+// ==========================================================
+let activeRealtimeAlerts = [];
+let lastAlertChimeTime = 0;
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function playAlertChime(severity) {
+  const now = Date.now();
+  if (now - lastAlertChimeTime < 4000) return; // Prevent audio overlap
+  lastAlertChimeTime = now;
+
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const isCrit = severity === 'CRITICAL';
+    osc.type = isCrit ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(isCrit ? 900 : 720, ctx.currentTime);
+    osc.frequency.setValueAtTime(isCrit ? 600 : 880, ctx.currentTime + 0.14);
+
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.4);
+  } catch (e) {
+    // AudioContext requires prior user interaction in some browsers
+  }
+}
+
+function handleIncomingAlert(alert) {
+  if (!alert) return;
+
+  // Avoid duplicate display if identical alert ID is currently active
+  const existingIdx = activeRealtimeAlerts.findIndex(a => a.id === alert.id);
+  if (existingIdx !== -1) {
+    activeRealtimeAlerts[existingIdx] = alert;
+  } else {
+    activeRealtimeAlerts.unshift(alert);
+    if (activeRealtimeAlerts.length > 8) activeRealtimeAlerts.pop();
+  }
+
+  // Play audio chime
+  playAlertChime(alert.severity);
+
+  // Update active alerts counter badge
+  updateActiveAlertsCount();
+
+  // Render to both Doctor and Patient views
+  renderAlertBanners();
+}
+
+function updateActiveAlertsCount() {
+  const unackCount = activeRealtimeAlerts.filter(a => !a.is_acknowledged).length;
+  const docBadge = document.getElementById('docActiveAlerts');
+  if (docBadge) {
+    docBadge.textContent = unackCount;
+  }
+  const docAlertBadge = document.getElementById('docAlertBadge');
+  const docAlertCount = document.getElementById('docAlertCount');
+  if (docAlertBadge && docAlertCount) {
+    docAlertCount.textContent = unackCount;
+    docAlertBadge.style.display = unackCount > 0 ? 'inline-flex' : 'none';
+  }
+}
+
+function renderAlertBanners() {
+  const docContainer = document.getElementById('doctorAlertBannerContainer');
+  const patContainer = document.getElementById('patientAlertBannerContainer');
+
+  const unackAlerts = activeRealtimeAlerts.filter(a => !a.is_acknowledged);
+
+  if (unackAlerts.length === 0) {
+    if (docContainer) docContainer.style.display = 'none';
+    if (patContainer) patContainer.style.display = 'none';
+    return;
+  }
+
+  // Most urgent alert (CRITICAL takes priority over HIGH)
+  const currentAlert = unackAlerts.slice().sort((a, b) => (b.severity === 'CRITICAL' ? 1 : 0) - (a.severity === 'CRITICAL' ? 1 : 0))[0];
+
+  const isCrit = currentAlert.severity === 'CRITICAL';
+  const alertClass = isCrit ? 'cardiox-alert-banner cardiox-alert-critical' : 'cardiox-alert-banner cardiox-alert-warning';
+  const badgeClass = isCrit ? 'badge badge-high' : 'badge badge-med';
+  const badgeText = isCrit ? 'CRITICAL ALERT' : 'WARNING';
+  const timeFormatted = new Date(currentAlert.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  // 1. Doctor Banner
+  if (docContainer) {
+    docContainer.className = alertClass;
+    docContainer.style.display = 'block';
+    docContainer.innerHTML = `
+      <div class="cardiox-alert-header">
+        <div class="cardiox-alert-title">
+          <span class="cardiox-alert-pulse-icon">⚠️</span>
+          <span>${escapeHtml(currentAlert.title)}</span>
+          <span class="${badgeClass}" style="font-weight: 800; font-size: 0.72rem;">${badgeText}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 0.76rem; color: #94A3B8; font-family: monospace;">${timeFormatted}</span>
+          <button class="btn btn-secondary" style="padding: 3px 10px; font-size: 0.75rem; font-weight: 700; background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.25);" onclick="acknowledgeAlert('${currentAlert.id}')">✓ Acknowledge</button>
+          <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 0.75rem;" onclick="dismissAlert('${currentAlert.id}')" title="Dismiss">✕</button>
+        </div>
+      </div>
+      <div class="cardiox-alert-body" style="margin: 4px 0;">
+        <div style="font-weight: 600; color: #E2E8F0; margin-bottom: 2px;">
+          Patient: <strong>${escapeHtml(currentAlert.patient_name || 'Patient')}</strong> (${currentAlert.patient_id}) • 
+          Parameter: <strong style="color: ${isCrit ? '#F87171' : '#FBBF24'};">${currentAlert.vital_type}: ${currentAlert.value} ${currentAlert.unit || ''}</strong>
+        </div>
+        <div style="font-size: 0.84rem; color: #CBD5E1;">
+          ${escapeHtml(currentAlert.clinical_note || currentAlert.message)}
+        </div>
+      </div>
+      <div class="cardiox-alert-footer">
+        <div class="cardiox-alert-disclaimer">
+          <span>⚠️</span>
+          <span>AI-Assisted Monitoring Alert — Decision Support Only, Not a Medical Diagnosis.</span>
+        </div>
+        <div style="font-size: 0.75rem; color: #94A3B8;">
+          Recommended: ${escapeHtml(currentAlert.recommendation || 'Continuous telemetry observation')}
+        </div>
+      </div>
+    `;
+  }
+
+  // 2. Patient Mobile Banner
+  if (patContainer) {
+    patContainer.className = alertClass;
+    patContainer.style.display = 'block';
+    patContainer.innerHTML = `
+      <div class="cardiox-alert-header">
+        <div class="cardiox-alert-title" style="font-size: 0.95rem;">
+          <span class="cardiox-alert-pulse-icon">⚠️</span>
+          <span>${escapeHtml(currentAlert.title)}</span>
+        </div>
+        <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.72rem;" onclick="acknowledgeAlert('${currentAlert.id}')">Dismiss</button>
+      </div>
+      <div class="cardiox-alert-body" style="font-size: 0.82rem; margin: 4px 0;">
+        <p style="margin: 0 0 6px 0; color: #F1F5F9; font-weight: 500;">
+          ${escapeHtml(currentAlert.message)}
+        </p>
+        <div style="background: rgba(0, 0, 0, 0.35); border-radius: 8px; padding: 6px 10px; font-size: 0.76rem; color: #93C5FD; border-left: 3px solid #3B82F6;">
+          💡 <strong>What you should do:</strong> ${escapeHtml(currentAlert.recommendation || 'Sit down, relax, and alert your doctor.')}
+        </div>
+      </div>
+      <div class="cardiox-alert-footer" style="padding-top: 4px;">
+        <div class="cardiox-alert-disclaimer" style="font-size: 0.68rem;">
+          <span>ℹ️</span>
+          <span>AI-assisted monitoring alert. Decision support only, not a medical diagnosis.</span>
+        </div>
+      </div>
+    `;
+  }
+}
+
+async function acknowledgeAlert(alertId) {
+  const alert = activeRealtimeAlerts.find(a => a.id === alertId);
+  if (alert) {
+    alert.is_acknowledged = true;
+  }
+  updateActiveAlertsCount();
+  renderAlertBanners();
+
+  try {
+    const token = currentAuth?.token;
+    if (token) {
+      await fetch(`${API_BASE}/alerts/${alertId}/ack`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+    }
+  } catch (err) {
+    console.warn('Alert ack error:', err.message);
+  }
+}
+
+function dismissAlert(alertId) {
+  activeRealtimeAlerts = activeRealtimeAlerts.filter(a => a.id !== alertId);
+  updateActiveAlertsCount();
+  renderAlertBanners();
+}
+
+async function fetchInitialAlerts() {
+  try {
+    const token = currentAuth?.token || 'demo-token';
+    const res = await fetch(`${API_BASE}/alerts`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.alerts)) {
+        const unacked = data.alerts.filter(a => !a.is_acknowledged);
+        if (unacked.length > 0) {
+          activeRealtimeAlerts = unacked.slice(0, 5);
+          updateActiveAlertsCount();
+          renderAlertBanners();
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Initial alerts load error:', err.message);
+  }
 }
 
 // ==========================================================

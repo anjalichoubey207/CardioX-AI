@@ -6,7 +6,7 @@ const router = Router();
 
 // GET /api/v1/alerts
 router.get('/', authenticate, (req, res) => {
-  let list = memDb.alerts.slice().reverse();
+  let list = memDb.alerts.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
   // If patient, only show their own alerts
   if (req.user.role === 'PATIENT') {

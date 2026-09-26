@@ -474,4 +474,126 @@ export class CardioXAiService {
       patient: patientBaseline
     });
   }
+
+  /**
+   * 6. Real-Time Physical Sensor Anomaly & Alert Engine
+   * Evaluates incoming real hardware telemetry to detect:
+   * - Very irregular ECG waves (Arrhythmia / High R-R dispersion / Ectopic spikes)
+   * - Critical Tachycardia (HR >= 115-120 BPM)
+   * - Severe Bradycardia (HR < 50 BPM)
+   * - Hypoxemia (SpO2 < 90%)
+   * 
+   * Strict Safety Constraint:
+   * "AI-assisted monitoring alert. Decision support only, not a medical diagnosis."
+   */
+  static evaluateRealtimeAlerts({
+    hr = null,
+    spo2 = null,
+    ecgSamples = [],
+    sampleRate = 125,
+    leadsOff = false,
+    patient = {},
+    fingerDetected = false
+  }) {
+    const alerts = [];
+    const patientName = patient?.full_name || patient?.name || 'Patient';
+    const patientId = patient?.id || 'pat-001';
+
+    const isHrValid = Boolean(fingerDetected && hr !== null && hr !== undefined && !isNaN(hr) && hr > 0);
+    const isSpo2Valid = Boolean(fingerDetected && spo2 !== null && spo2 !== undefined && !isNaN(spo2) && spo2 > 0);
+
+    // 1. High Heart Rate (Tachycardia Alert)
+    if (isHrValid && hr >= 115) {
+      const isCritical = hr >= 130;
+      alerts.push({
+        id: `alt-hr-high-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        patient_id: patientId,
+        patient_name: patientName,
+        category: 'TACHYCARDIA',
+        severity: isCritical ? 'CRITICAL' : 'HIGH',
+        vital_type: 'HEART_RATE',
+        value: hr,
+        unit: 'BPM',
+        title: isCritical ? `⚠️ Critical Tachycardia: ${hr} BPM` : `⚠️ High Heart Rate Alert: ${hr} BPM`,
+        message: `Measured heart rate of ${hr} BPM is significantly above resting thresholds. Please sit down, rest calmly, and avoid exertion.`,
+        clinical_note: `Accelerated ventricular rate detected (${hr} BPM). Recommend 12-lead ECG correlation, hydration check, and hemodynamic observation.`,
+        recommendation: 'Rest in a seated position. Avoid sudden physical movement. Notify healthcare staff if symptoms persist.',
+        disclaimer: '⚠️ AI-assisted monitoring alert. Decision support only, not a medical diagnosis.',
+        is_acknowledged: false,
+        created_at: new Date().toISOString()
+      });
+    }
+
+    // 2. Low Heart Rate (Bradycardia Alert)
+    if (isHrValid && hr < 50 && hr >= 30) {
+      const isCritical = hr < 45;
+      alerts.push({
+        id: `alt-hr-low-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        patient_id: patientId,
+        patient_name: patientName,
+        category: 'BRADYCARDIA',
+        severity: isCritical ? 'CRITICAL' : 'HIGH',
+        vital_type: 'HEART_RATE',
+        value: hr,
+        unit: 'BPM',
+        title: isCritical ? `⚠️ Critical Bradycardia: ${hr} BPM` : `⚠️ Low Heart Rate Alert: ${hr} BPM`,
+        message: `Measured heart rate of ${hr} BPM is unusually low. Check for feelings of dizziness, lightheadedness, or shortness of breath.`,
+        clinical_note: `Depressed heart rate observed (${hr} BPM). Assess for sinus bradycardia, medication effect, or vagal hypertonia.`,
+        recommendation: 'Remain seated or lying down. Alert clinical supervisor if accompanied by dizziness or syncope.',
+        disclaimer: '⚠️ AI-assisted monitoring alert. Decision support only, not a medical diagnosis.',
+        is_acknowledged: false,
+        created_at: new Date().toISOString()
+      });
+    }
+
+    // 3. Low Oxygen Saturation (Hypoxemia Alert)
+    if (isSpo2Valid && spo2 < 90 && spo2 >= 60) {
+      const isCritical = spo2 < 88;
+      alerts.push({
+        id: `alt-spo2-low-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        patient_id: patientId,
+        patient_name: patientName,
+        category: 'HYPOXEMIA',
+        severity: isCritical ? 'CRITICAL' : 'HIGH',
+        vital_type: 'SPO2',
+        value: spo2,
+        unit: '%',
+        title: isCritical ? `⚠️ Critical Hypoxemia: SpO₂ ${spo2}%` : `⚠️ Low Blood Oxygen Alert: SpO₂ ${spo2}%`,
+        message: `Blood oxygen saturation dropped to ${spo2}%. Take slow, deep breaths and ensure the sensor has good finger contact.`,
+        clinical_note: `Sub-optimal arterial oxygen saturation (${spo2}%). Verify sensor placement and evaluate respiratory status.`,
+        recommendation: 'Breathe deeply and slowly. Keep finger steady on sensor. Seek medical attention if levels remain low.',
+        disclaimer: '⚠️ AI-assisted monitoring alert. Decision support only, not a medical diagnosis.',
+        is_acknowledged: false,
+        created_at: new Date().toISOString()
+      });
+    }
+
+    // 4. Irregular ECG Rhythm (Arrhythmia / High R-R Dispersion)
+    if (!leadsOff && ecgSamples && Array.isArray(ecgSamples) && ecgSamples.length >= 40) {
+      const ecgClassification = this.classifyEcgWaveform(ecgSamples, sampleRate, leadsOff);
+      if (!ecgClassification.isNormal && ecgClassification.status === 'CLASSIFIED') {
+        const cvPercent = ecgClassification.cv ? (ecgClassification.cv * 100).toFixed(1) : 0;
+        const isCritical = ecgClassification.cv > 0.25;
+        alerts.push({
+          id: `alt-ecg-irr-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          patient_id: patientId,
+          patient_name: patientName,
+          category: 'ARRHYTHMIA',
+          severity: isCritical ? 'CRITICAL' : 'HIGH',
+          vital_type: 'ECG',
+          value: `${cvPercent}% CV`,
+          unit: 'dispersion',
+          title: `⚠️ Irregular ECG Rhythm: ${ecgClassification.patternType || 'Arrhythmia Detected'}`,
+          message: `Variable R-R intervals or rhythm dispersion detected on live ECG stream (variability: ${cvPercent}%). Stay calm and seated.`,
+          clinical_note: `Rhythm irregularity detected: ${ecgClassification.details}. Diagnostic 12-lead ECG review recommended.`,
+          recommendation: 'Sit comfortably and relax. Avoid moving during active rhythm recording.',
+          disclaimer: '⚠️ AI-assisted monitoring alert. Decision support only, not a medical diagnosis.',
+          is_acknowledged: false,
+          created_at: new Date().toISOString()
+        });
+      }
+    }
+
+    return alerts;
+  }
 }

@@ -145,6 +145,7 @@
 
       <div id="wsIndicator" class="pulse-dot"></div>
       <span id="wsStatusText" style="margin-right: 8px;">Gateway: Connected</span>
+      <span id="docAlertBadge" class="badge" style="display: none; background: rgba(239, 68, 68, 0.2); color: #EF4444; border: 1px solid #EF4444; font-size: 0.75rem; font-weight: 700; margin-right: 8px;">⚠️ <span id="docAlertCount">0</span> Alerts</span>
 
       <!-- Active User Chip & Logout -->
       <div id="userProfileChip" style="display: flex; align-items: center; gap: 8px; background: #0B0F19; border: 1px solid var(--border); padding: 4px 10px; border-radius: 8px;">
@@ -171,6 +172,9 @@
         <span id="docNotesDoctorBadge">Doctor</span>
         <span id="vitalsFallbackNotice"></span>
       </div>
+
+      <!-- Real-Time Doctor Clinical Alert Banner -->
+      <div id="doctorAlertBannerContainer" style="display: none; margin-bottom: 1.25rem;"></div>
 
       <!-- Hero Real-Time Vitals Cards (The 4 Main Things) -->
       <div class="stat-grid" style="margin-bottom: 1.25rem;">
@@ -358,6 +362,9 @@
           </div>
           <span class="badge badge-low" id="patStatusBadge">● Monitoring</span>
         </div>
+
+        <!-- Real-Time Patient Clinical Alert Banner -->
+        <div id="patientAlertBannerContainer" style="display: none; margin-bottom: 1.25rem;"></div>
 
         <!-- Vitals Dual Card -->
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">

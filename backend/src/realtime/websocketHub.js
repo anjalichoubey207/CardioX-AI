@@ -14,6 +14,7 @@ export class RealtimeHub {
     this.rooms = new Map(); // roomId -> Set of WebSocket clients
     this.deviceSockets = new Map(); // deviceId -> WebSocket
     this.simulationInterval = null;
+    this.alertCooldowns = new Map(); // key -> timestamp of last fired alert
 
     this.init();
   }
@@ -393,6 +394,57 @@ export class RealtimeHub {
 
     this.broadcast(`patient:${patientId}`, enrichedFrame);
     this.broadcastAll(enrichedFrame);
+
+    // 4.1 Real-Time Alert Evaluation & Broadcast (Strictly based on real physical sensor data)
+    if (frame.fingerDetected || frame.ecgSignalValid) {
+      try {
+        const patient = memDb.patients.find(p => p.id === patientId);
+        const liveAlerts = CardioXAiService.evaluateRealtimeAlerts({
+          hr: (frame.fingerDetected && frame.heartRate > 0) ? Math.round(frame.heartRate) : null,
+          spo2: (frame.fingerDetected && frame.spo2 > 0) ? Math.round(frame.spo2) : null,
+          ecgSamples: frame.ecgSignalValid ? (frame.samples || []) : [],
+          sampleRate: frame.sampleRate || 125,
+          leadsOff: !frame.ecgSignalValid,
+          patient: patient || {},
+          fingerDetected: Boolean(frame.fingerDetected)
+        });
+
+        const now = Date.now();
+        for (const alert of liveAlerts) {
+          const cooldownKey = `${patientId}_${alert.category}`;
+          const lastFired = this.alertCooldowns.get(cooldownKey) || 0;
+          // 15s cooldown per category, 8s if critical
+          const cooldownDuration = alert.severity === 'CRITICAL' ? 8000 : 15000;
+
+          if (now - lastFired >= cooldownDuration) {
+            this.alertCooldowns.set(cooldownKey, now);
+
+            // Persist to memDb alerts list
+            memDb.alerts.unshift(alert);
+            if (memDb.alerts.length > 200) memDb.alerts.pop();
+
+            // Escalate patient attention score
+            if (patient) {
+              patient.attention_score = alert.severity === 'CRITICAL' ? 95 : 75;
+            }
+
+            console.log(`[ALERT] ⚠️ ${alert.severity} alert triggered for ${alert.patient_name}: ${alert.title}`);
+
+            const alertPayload = {
+              type: 'ALERT_NOTIFICATION',
+              patientId,
+              sessionId,
+              alert
+            };
+
+            this.broadcast(`patient:${patientId}`, alertPayload);
+            this.broadcastAll(alertPayload);
+          }
+        }
+      } catch (err) {
+        console.warn('[RealtimeHub] Real-time alert evaluation note:', err.message);
+      }
+    }
 
     // 5. Periodic Live AI Assessment Broadcast (Every 2.5s)
     if (!this.lastAiEvaluationTime || Date.now() - this.lastAiEvaluationTime > 2500) {

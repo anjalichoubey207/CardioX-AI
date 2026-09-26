@@ -916,3 +916,113 @@ input[type="range"] {
   header { flex-direction: column; gap: 10px; align-items: flex-start; }
   .nav-tabs { width: 100%; justify-content: space-around; }
 }
+
+/* ==================================================== */
+/* Real-Time Clinical Alert Banner Styles               */
+/* ==================================================== */
+.cardiox-alert-banner {
+  border-radius: 14px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  transition: all 0.3s ease;
+  animation: alertPulseIn 0.4s ease-out;
+}
+
+@keyframes alertPulseIn {
+  0% { transform: translateY(-8px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.cardiox-alert-critical {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.22) 0%, rgba(19, 27, 46, 0.98) 100%);
+  border: 2px solid #EF4444;
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.35);
+}
+
+.cardiox-alert-warning {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.22) 0%, rgba(19, 27, 46, 0.98) 100%);
+  border: 2px solid #F59E0B;
+  box-shadow: 0 0 24px rgba(245, 158, 11, 0.35);
+}
+
+.cardiox-alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cardiox-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.cardiox-alert-critical .cardiox-alert-title {
+  color: #F87171;
+}
+
+.cardiox-alert-warning .cardiox-alert-title {
+  color: #FBBF24;
+}
+
+.cardiox-alert-pulse-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 16px;
+  animation: alertIconBlink 1.2s infinite ease-in-out;
+}
+
+.cardiox-alert-critical .cardiox-alert-pulse-icon {
+  background: rgba(239, 68, 68, 0.3);
+  box-shadow: 0 0 12px #EF4444;
+}
+
+.cardiox-alert-warning .cardiox-alert-pulse-icon {
+  background: rgba(245, 158, 11, 0.3);
+  box-shadow: 0 0 12px #F59E0B;
+}
+
+@keyframes alertIconBlink {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.15); opacity: 0.8; }
+}
+
+.cardiox-alert-body {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #F1F5F9;
+}
+
+.cardiox-alert-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cardiox-alert-disclaimer {
+  font-size: 0.74rem;
+  color: #94A3B8;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
