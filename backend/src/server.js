@@ -157,19 +157,90 @@ app.get('/api/v1/readings/csv', (req, res) => {
   res.status(404).json({ error: 'No readings file found yet' });
 });
 
-// Hardware Self-Test & Diagnostic Pulse Trigger
+// Hardware Self-Test & Direct Clinical Demo Condition Trigger
 app.post('/api/v1/hardware/test-pulse', (req, res) => {
-  const bpm = (req.body && req.body.bpm) ? req.body.bpm : 78;
-  const spo2 = (req.body && req.body.spo2) ? req.body.spo2 : 98;
+  const condition = (req.body && req.body.condition) ? String(req.body.condition).toUpperCase() : 'NORMAL';
   const patientId = realtimeHub.activePatientId || 'pat-001';
 
+  if (condition === 'RESET' || condition === 'REAL' || condition === 'LIVE') {
+    const resetFrame = {
+      type: 'ECG_FRAME',
+      deviceId: 'DX-ESP8266-001',
+      sessionId: 'sess-001',
+      patientId: patientId,
+      timestamp: Date.now(),
+      leadsOff: true,
+      signalQuality: 'LEADS_OFF',
+      sampleRate: 125,
+      heartRate: 0,
+      spo2: 0,
+      fingerDetected: false,
+      samples: []
+    };
+    realtimeHub.handleEcgFrame(resetFrame, true);
+    return res.json({ message: 'Reset to live hardware listening mode', condition: 'LIVE' });
+  }
+
+  let bpm = 74;
+  let spo2 = 98;
+  let isIrregular = false;
+
+  if (condition === 'TACHYCARDIA') {
+    bpm = req.body.bpm || 132;
+    spo2 = req.body.spo2 || 97;
+  } else if (condition === 'BRADYCARDIA') {
+    bpm = req.body.bpm || 44;
+    spo2 = req.body.spo2 || 98;
+  } else if (condition === 'HYPOXEMIA') {
+    bpm = req.body.bpm || 88;
+    spo2 = req.body.spo2 || 86;
+  } else if (condition === 'ARRHYTHMIA') {
+    bpm = req.body.bpm || 84;
+    spo2 = req.body.spo2 || 96;
+    isIrregular = true;
+  } else { // NORMAL
+    bpm = req.body.bpm || 74;
+    spo2 = req.body.spo2 || 99;
+  }
+
+  // Generate realistic 125 Hz Lead II ECG wave buffer (125 samples = 1 full second)
   const samples = [];
-  for (let i = 0; i < 25; i++) {
-    const phase = i / 25;
-    let val = 512;
-    if (phase > 0.25 && phase < 0.35) val += 300 * Math.sin((phase - 0.25) * Math.PI / 0.1);
-    else if (phase > 0.45 && phase < 0.65) val += 80 * Math.sin((phase - 0.45) * Math.PI / 0.2);
-    samples.push(Math.round(val));
+  const sampleRate = 125;
+  const numSamples = 125;
+
+  if (isIrregular) {
+    // Uneven RR intervals with premature ectopic complexes
+    const peakIndices = [12, 48, 88, 108];
+    for (let i = 0; i < numSamples; i++) {
+      let val = 512 + Math.round((Math.random() - 0.5) * 4);
+      for (const p of peakIndices) {
+        const dist = Math.abs(i - p);
+        if (dist === 0) val = 950;
+        else if (dist === 1) val = 780;
+        else if (dist === 2) val = 340;
+        else if (dist >= 3 && dist <= 6) val = 512 + Math.round(70 * Math.sin((dist - 3) * Math.PI / 4));
+      }
+      samples.push(Math.round(val));
+    }
+  } else {
+    // Sinus rhythm at specified BPM
+    const samplesPerBeat = Math.max(25, Math.round((60 / bpm) * sampleRate));
+    for (let i = 0; i < numSamples; i++) {
+      const beatPhase = (i % samplesPerBeat) / samplesPerBeat;
+      let val = 512 + Math.round((Math.random() - 0.5) * 3);
+      if (beatPhase >= 0.12 && beatPhase < 0.20) {
+        val += 45 * Math.sin((beatPhase - 0.12) * Math.PI / 0.08); // P-wave
+      } else if (beatPhase >= 0.23 && beatPhase < 0.25) {
+        val -= 50; // Q-wave
+      } else if (beatPhase >= 0.25 && beatPhase < 0.31) {
+        val += 380 * Math.sin((beatPhase - 0.25) * Math.PI / 0.06); // R-peak
+      } else if (beatPhase >= 0.31 && beatPhase < 0.34) {
+        val -= 70; // S-wave
+      } else if (beatPhase >= 0.42 && beatPhase < 0.60) {
+        val += 85 * Math.sin((beatPhase - 0.42) * Math.PI / 0.18); // T-wave
+      }
+      samples.push(Math.round(val));
+    }
   }
 
   const testFrame = {
@@ -179,7 +250,8 @@ app.post('/api/v1/hardware/test-pulse', (req, res) => {
     patientId: patientId,
     timestamp: Date.now(),
     leadsOff: false,
-    signalQuality: 'STABLE',
+    signalQuality: 'EXCELLENT',
+    ecgSignalValid: true,
     sampleRate: 125,
     heartRate: bpm,
     spo2: spo2,
@@ -188,7 +260,7 @@ app.post('/api/v1/hardware/test-pulse', (req, res) => {
   };
 
   realtimeHub.handleEcgFrame(testFrame, true);
-  res.json({ message: 'Diagnostic pulse sent to active patient', patientId, bpm, spo2 });
+  res.json({ message: `Injected demo condition: ${condition}`, condition, patientId, bpm, spo2 });
 });
 
 // Fallback for Single Page App

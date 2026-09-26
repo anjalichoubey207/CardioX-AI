@@ -1231,6 +1231,27 @@ async function triggerHardwareTestPulse() {
   }
 }
 
+async function triggerConditionPreset(condition) {
+  try {
+    const host = window.location.hostname || 'localhost';
+    const port = window.location.port || '5000';
+    const proto = window.location.protocol || 'http:';
+    const res = await fetch(`${proto}//${host}:${port}/api/v1/hardware/test-pulse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ condition })
+    });
+    const data = await res.json();
+    if (condition === 'RESET') {
+      showToast('🔌 Switched back to Live Sensor Listening Mode');
+    } else {
+      showToast(`🩺 Demo Condition Injected: ${condition}`);
+    }
+  } catch (err) {
+    console.warn('Condition preset error:', err);
+  }
+}
+
 // ==========================================================
 // 5. Client-Side Synthetic ECG Engine (Disabled: Real Hardware Only)
 // ==========================================================
