@@ -266,19 +266,21 @@ export class RealtimeHub {
         this.lastValidEcgTimestamp = Date.now();
       }
     }
-    // True clinical hysteresis: keep active for 3.5s after last valid frame
-    const ecgValid = Boolean(frame.ecgSignalValid || frame.fingerDetected || (this.lastValidEcgTimestamp && (Date.now() - this.lastValidEcgTimestamp < 3500)));
+    const isFingerOn = Boolean(frame.fingerDetected);
+    const isLeadsOff = (frame.leadsOff !== undefined) ? Boolean(frame.leadsOff) : true;
+    const ecgValid = Boolean(isFingerOn || (!isLeadsOff && frame.ecgSignalValid));
+
     frame.ecgSignalValid = ecgValid;
-    frame.leadsOff = frame.leadsOff !== undefined ? Boolean(frame.leadsOff) : !ecgValid;
-    frame.signalQuality = ecgValid ? 'EXCELLENT' : 'LEADS_OFF';
+    frame.leadsOff = isFingerOn ? false : isLeadsOff;
+    frame.signalQuality = (isFingerOn || ecgValid) ? 'EXCELLENT' : 'LEADS_OFF';
 
     // 0.1 Exact 1:1 Hardware Pass-Through (Matches OLED display 100%)
-    const rawHwHr = (frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) ? Math.round(frame.heartRate) : 0;
-    const rawHwSpo2 = (frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : 0;
+    const rawHwHr = (isFingerOn && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) ? Math.round(frame.heartRate) : 0;
+    const rawHwSpo2 = (isFingerOn && frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : 0;
 
     frame.heartRate = rawHwHr;
     frame.spo2 = rawHwSpo2;
-    frame.fingerDetected = Boolean(frame.fingerDetected);
+    frame.fingerDetected = isFingerOn;
 
     // 1. If this frame came from real hardware, record arrival time & announce connect if previously inactive
     if (isRealHw) {
@@ -377,11 +379,11 @@ export class RealtimeHub {
       if (patient) {
         patient.current_hr = (frame.fingerDetected && hrVal >= 40 && hrVal <= 200) ? Math.round(hrVal) : null;
         patient.current_spo2 = (frame.fingerDetected && spo2Val >= 70 && spo2Val <= 100) ? Math.round(spo2Val) : null;
-        patient.status = (frame.fingerDetected || frame.ecgSignalValid) ? 'MONITORING' : 'IDLE';
-        patient.signal_quality = frame.ecgSignalValid ? 'EXCELLENT' : (frame.fingerDetected ? 'GOOD' : 'WAITING');
-        patient.leads_off = !frame.ecgSignalValid;
+        patient.status = frame.fingerDetected ? 'MONITORING' : 'IDLE';
+        patient.signal_quality = frame.fingerDetected ? 'EXCELLENT' : 'WAITING';
+        patient.leads_off = !frame.fingerDetected;
         patient.finger_detected = Boolean(frame.fingerDetected);
-        patient.last_active = 'Just now';
+        patient.last_active = frame.fingerDetected ? 'Just now' : 'Waiting for sensor';
       }
     }
 

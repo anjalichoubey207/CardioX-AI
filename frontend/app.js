@@ -657,43 +657,42 @@ function handleIncomingTelemetry(frame) {
         lastValidEcgTimestamp = Date.now();
       }
     }
-    // True clinical hysteresis: preserve waveform and active status for 3.5s after valid signal
-    const ecgValid = Boolean(frame.ecgSignalValid || (lastValidEcgTimestamp && (Date.now() - lastValidEcgTimestamp < 3500)));
-    isHardwareSignalValid = ecgValid;
+    // 1. Precise Hardware Signal & Contact State Detection
+    const isFingerOn = Boolean(frame.fingerDetected && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
+    const hasValidEcgSignal = Boolean(!frame.leadsOff && frame.ecgSignalValid && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
+    const isSignalActive = Boolean(isFingerOn || hasValidEcgSignal);
+
+    isHardwareSignalValid = isSignalActive;
 
     // 2. Multi-Sensor Vitals Resolution (MAX30102 Optical OR AD8232 ECG R-Peaks)
-    const hasFinger = Boolean(frame.fingerDetected && frame.heartRate && frame.heartRate >= 45 && frame.heartRate <= 200);
     let hrValue = null;
     let spo2Value = null;
 
-    if (hasFinger) {
+    if (isFingerOn) {
       hrValue = Math.round(frame.heartRate);
-      spo2Value = Math.round(frame.spo2 || 98);
-    } else if (ecgValid) {
-      // Real Heart Rate from ECG R-peaks
-      const ecgHr = (frame.heartRate && frame.heartRate >= 45 && frame.heartRate <= 200)
-        ? Math.round(frame.heartRate)
-        : detectClientEcgRPeak(frame.samples, frame.sampleRate || 125);
-      hrValue = ecgHr || 74;
-      spo2Value = (frame.spo2 && frame.spo2 >= 70) ? Math.round(frame.spo2) : 98;
+      spo2Value = (frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : null;
+    } else if (hasValidEcgSignal) {
+      hrValue = Math.round(frame.heartRate);
+      spo2Value = null; // ECG electrodes cannot measure blood oxygen!
+    } else {
+      // Finger is removed: IMMEDIATELY clear to null ("--")
+      hrValue = null;
+      spo2Value = null;
     }
 
-    // 3. Update Vitals UI IMMEDIATELY (Clears to "--" if no active sensor)
-    updateVitalsUI(hrValue, spo2Value, ecgValid ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !ecgValid, hasFinger, frame.patientId);
+    // 3. Update Vitals UI IMMEDIATELY (Clears to "--" when finger is removed)
+    updateVitalsUI(hrValue, spo2Value, isSignalActive ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !isSignalActive, isFingerOn, frame.patientId);
     updateEcgHudStatus();
 
     // 4. Feed incoming real hardware samples into ecgBuffer
-    const hasLiveSignal = Boolean(ecgValid || frame.fingerDetected || hasFinger);
-    if (hasLiveSignal && frame.samples && frame.samples.length) {
-      if (!isRailed) {
-        for (let s of frame.samples) {
-          if (s > 1024) s = Math.round(s / 4);
-          ecgBuffer.push(s);
-          if (ecgBuffer.length > MAX_ECG_POINTS) ecgBuffer.shift();
-        }
+    if (isSignalActive && frame.samples && frame.samples.length) {
+      for (let s of frame.samples) {
+        if (s > 1024) s = Math.round(s / 4);
+        ecgBuffer.push(s);
+        if (ecgBuffer.length > MAX_ECG_POINTS) ecgBuffer.shift();
       }
-    } else if (!hasLiveSignal) {
-      // Clear waveform ONLY when completely disconnected for > 3.5 seconds
+    } else if (!isSignalActive) {
+      // Clear waveform immediately when finger is removed and no ECG leads
       ecgBuffer = [];
     }
   } else if (frame.type === 'DEVICE_HEARTBEAT') {
@@ -706,11 +705,11 @@ function handleIncomingTelemetry(frame) {
       }
     }
 
-    const hasFinger = Boolean(frame.fingerDetected);
-    const hrValue = (hasFinger && frame.heartRate && frame.heartRate >= 40) ? Math.round(frame.heartRate) : (frame.heartRate ? Math.round(frame.heartRate) : null);
-    const spo2Value = (hasFinger && frame.spo2 && frame.spo2 >= 70) ? Math.round(frame.spo2) : null;
+    const isFingerOn = Boolean(frame.fingerDetected && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
+    const hrValue = isFingerOn ? Math.round(frame.heartRate) : null;
+    const spo2Value = (isFingerOn && frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : null;
 
-    updateVitalsUI(hrValue, spo2Value, hasFinger ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !hasFinger, hasFinger, frame.patientId || 'pat-001');
+    updateVitalsUI(hrValue, spo2Value, isFingerOn ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !isFingerOn, isFingerOn, frame.patientId || 'pat-001');
     updateEcgHudStatus();
   }
 }
@@ -794,45 +793,59 @@ let latestSignalQuality = 'STABLE';
 function updateVitalsUI(hr, spo2, quality, isRealHardware = false, deviceId = null, leadsOff = false, fingerDetected = false, targetPatientId = null) {
   latestSignalQuality = 'STABLE';
 
+  const hasValidHr = (hr !== null && hr !== undefined && hr > 0);
+  const hasValidSpo2 = (spo2 !== null && spo2 !== undefined && spo2 > 0);
+
+  const hrNum = hasValidHr ? Math.round(parseFloat(hr)) : null;
+  const spo2Num = hasValidSpo2 ? Math.round(parseFloat(spo2)) : null;
+
+  const isSensorActive = Boolean(fingerDetected || hrNum);
+
   const qBadge = document.getElementById('ecgQualityBadge');
   const patSignalText = document.getElementById('patSignalText');
   const ecgLiveBadge = document.getElementById('ecgLiveBadge');
   const systemModeBadge = document.getElementById('systemModeBadge');
 
   if (qBadge) {
-    qBadge.textContent = '● Live ECG Stream Active';
-    qBadge.className = 'badge badge-low';
-    qBadge.style.color = '#00F0FF';
-    qBadge.style.borderColor = '#00F0FF';
-    qBadge.style.background = 'rgba(0, 240, 255, 0.15)';
+    if (isSensorActive) {
+      qBadge.textContent = '● Live Signal Active';
+      qBadge.className = 'badge badge-low';
+      qBadge.style.color = '#00F0FF';
+      qBadge.style.borderColor = '#00F0FF';
+      qBadge.style.background = 'rgba(0, 240, 255, 0.15)';
+    } else {
+      qBadge.textContent = '○ Waiting for Sensor Contact';
+      qBadge.className = 'badge';
+      qBadge.style.color = '#94A3B8';
+      qBadge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+      qBadge.style.background = 'rgba(100, 116, 139, 0.15)';
+    }
   }
 
   if (patSignalText) {
-    patSignalText.textContent = '● Real-Time ECG Stream';
-    patSignalText.style.color = '#00F0FF';
+    if (isSensorActive) {
+      patSignalText.textContent = '● Real-Time Sensor Stream';
+      patSignalText.style.color = '#00F0FF';
+    } else {
+      patSignalText.textContent = '○ Place Finger on MAX30102';
+      patSignalText.style.color = '#94A3B8';
+    }
   }
 
   if (ecgLiveBadge) {
     ecgLiveBadge.textContent = 'Lead II';
-    ecgLiveBadge.className = 'badge badge-low';
-    ecgLiveBadge.style.color = '#00F0FF';
-    ecgLiveBadge.style.borderColor = '#00F0FF';
-    ecgLiveBadge.style.background = 'rgba(0, 240, 255, 0.15)';
+    ecgLiveBadge.className = isSensorActive ? 'badge badge-low' : 'badge';
+    ecgLiveBadge.style.color = isSensorActive ? '#00F0FF' : '#94A3B8';
+    ecgLiveBadge.style.borderColor = isSensorActive ? '#00F0FF' : 'rgba(148, 163, 184, 0.3)';
+    ecgLiveBadge.style.background = isSensorActive ? 'rgba(0, 240, 255, 0.15)' : 'rgba(100, 116, 139, 0.15)';
   }
 
   if (systemModeBadge) {
-    systemModeBadge.textContent = 'LIVE';
-    systemModeBadge.style.color = '#00F0FF';
-    systemModeBadge.style.background = 'rgba(0, 240, 255, 0.15)';
-    systemModeBadge.style.borderColor = '#00F0FF';
+    systemModeBadge.textContent = isSensorActive ? 'LIVE' : 'WAITING';
+    systemModeBadge.style.color = isSensorActive ? '#00F0FF' : '#94A3B8';
+    systemModeBadge.style.background = isSensorActive ? 'rgba(0, 240, 255, 0.15)' : 'rgba(100, 116, 139, 0.15)';
+    systemModeBadge.style.borderColor = isSensorActive ? '#00F0FF' : 'rgba(148, 163, 184, 0.3)';
   }
-
-  // Display ONLY valid real-time hardware values (no cached/fallback values!)
-  const hasValidHr = (hr !== null && hr !== undefined && hr > 0);
-  const hasValidSpo2 = (spo2 !== null && spo2 !== undefined && spo2 > 0);
-
-  const hrNum = hasValidHr ? Math.round(parseFloat(hr)) : null;
-  const spo2Num = hasValidSpo2 ? Math.round(parseFloat(spo2)) : null;
 
   const liveHr = document.getElementById('liveHrDisplay');
   const liveSpo2 = document.getElementById('liveSpo2Display');
@@ -868,14 +881,14 @@ function updateVitalsUI(hr, spo2, quality, isRealHardware = false, deviceId = nu
     if (hrCell) hrCell.innerHTML = hrNum ? `<strong>${hrNum}</strong> BPM` : `--`;
     if (spo2Cell) spo2Cell.innerHTML = spo2Num ? `<strong>${spo2Num}%</strong>` : `--`;
     if (statusCell) {
-      statusCell.innerHTML = (hrNum || isHardwareSignalValid) 
+      statusCell.innerHTML = isSensorActive 
         ? `<span class="badge badge-low">● Active Monitoring</span>` 
         : `<span class="badge" style="background: rgba(100, 116, 139, 0.2); color: #94A3B8;">Waiting for sensor</span>`;
     }
   }
 
   // Update AI Insights panel based on real physical sensor data and actual patient age
-  updateRealAiInsights(hrNum, spo2Num, isHardwareSignalValid ? 'EXCELLENT' : 'WAITING');
+  updateRealAiInsights(hrNum, spo2Num, isSensorActive ? 'EXCELLENT' : 'WAITING');
 
   // Update Trends chart with physical telemetry data point
   addRealTrendPoint(hrNum, spo2Num);
@@ -890,8 +903,8 @@ function updateRealAiInsights(hr, spo2, quality) {
   const spo2Val = (spo2 !== null && spo2 !== undefined && spo2 > 0) ? Math.round(spo2) : null;
   const patAge = activePatientProfile?.age || 26;
 
-  // If there is insufficient real sensor data, do NOT make an AI conclusion
-  if (!hrVal && !spo2Val && !isHardwareSignalValid) {
+  // If there is insufficient real sensor data (finger removed), do NOT make an AI conclusion
+  if (!hrVal && !spo2Val) {
     updateAiDashboardCard({
       riskLevel: 'Insufficient data',
       hasSufficientData: false,
@@ -900,12 +913,12 @@ function updateRealAiInsights(hr, spo2, quality) {
       ecgClassification: {
         classification: 'Awaiting Signal',
         isNormal: true,
-        patternType: 'Waiting for ECG signal'
+        patternType: 'Waiting for sensor'
       },
       historicalComparison: {
         comparisonSummary: 'Awaiting active telemetry stream'
       },
-      doctorSummary: 'Insufficient real sensor data. Waiting for hardware sensors to provide valid readings.',
+      doctorSummary: 'Insufficient real sensor data. Waiting for MAX30102 finger sensor and AD8232 ECG electrodes to provide valid readings.',
       patientSummary: `Insufficient data. Patient age is ${patAge} years. Please place your finger on the MAX30102 sensor and attach AD8232 ECG electrodes to generate your AI monitoring summary. This is a clinical decision-support and monitoring summary, not a medical diagnosis.`
     });
     return;
