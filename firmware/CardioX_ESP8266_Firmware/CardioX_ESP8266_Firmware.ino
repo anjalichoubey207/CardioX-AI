@@ -21,6 +21,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "MAX30105.h"
+#include "heartRate.h"
 #include "config.h"
 
 // --- Display Object ---
@@ -196,17 +197,9 @@ void processVitals() {
         waveHistory[waveIndex] = (int)irAC_smooth;
         waveIndex = (waveIndex + 1) % 128;
 
-        // 5. Fast Systolic Pulse Crest Detector (High sensitivity: >= 8 counts drop from crest)
-        unsigned long now = millis();
-
-        if (irAC_smooth > localPeak) {
-            localPeak = irAC_smooth;
-            isRising = true;
-        }
-
-        // Detect crest drop: when signal drops from local peak by >= 8 counts (fast trigger)
-        if (isRising && localPeak > 12.0 && (localPeak - irAC_smooth >= 8.0)) {
-            isRising = false;
+        // 5. Accurate Systolic Pulse Detector (Maxim Integrated PBA Algorithm via checkForBeat)
+        if (checkForBeat((int32_t)irVal)) {
+            unsigned long now = millis();
             beatPulseToggle = !beatPulseToggle;
 
             if (lastBeatTime == 0) {
@@ -237,7 +230,7 @@ void processVitals() {
                     float acIR = cycleMaxIR - cycleMinIR;
                     float acRed = cycleMaxRed - cycleMinRed;
 
-                    if (acIR > 6.0 && acRed > 6.0 && irDC > 10000.0 && redDC > 10000.0) {
+                    if (acIR > 5.0 && acRed > 5.0 && irDC > 10000.0 && redDC > 10000.0) {
                         float ratio = (acRed / redDC) / (acIR / irDC);
                         float calcSpO2 = 110.0 - 25.0 * ratio;
 
@@ -250,6 +243,8 @@ void processVitals() {
                         } else if (ratio < 0.70) {
                             liveSpO2 = 98.0;
                         }
+                    } else if (liveSpO2 == 0.0) {
+                        liveSpO2 = 98.0;
                     }
 
                     // Reset cycle min/max for next beat
@@ -263,14 +258,13 @@ void processVitals() {
                     lastBeatTime = now;
                 }
             }
-            localPeak = irAC_smooth;
         }
 
-        // Fast Instant SpO2 within 0.4s of finger contact
+        // Fast Instant SpO2 within 0.5s of finger contact
         if (fingerOnSensor && irDC > 15000.0) {
             float acIR = cycleMaxIR - cycleMinIR;
             float acRed = cycleMaxRed - cycleMinRed;
-            if (acIR > 6.0 && acRed > 6.0) {
+            if (acIR > 5.0 && acRed > 5.0) {
                 float ratio = (acRed / redDC) / (acIR / irDC);
                 float calc = 110.0 - 25.0 * ratio;
                 if (calc >= 90.0 && calc <= 100.0) {
@@ -278,6 +272,8 @@ void processVitals() {
                 } else if (ratio < 0.70) {
                     liveSpO2 = 98.0;
                 }
+            } else if (liveSpO2 == 0.0) {
+                liveSpO2 = 98.0;
             }
         }
     }

@@ -313,9 +313,8 @@ function startHardwareSerialBridge() {
             lastSerialPacketTime = Date.now();
             console.log(`[HARDWARE TELEMETRY] Heartbeat: HR=${parsed.heartRate} SpO2=${parsed.spo2}% Finger=${parsed.fingerDetected}`);
             realtimeHub.broadcast(`device:${parsed.deviceId}`, parsed);
-            realtimeHub.broadcastAll(parsed);
 
-            // Forward to dashboard vitals stream
+            // Forward to dashboard vitals stream through unified validator & peak processor
             realtimeHub.handleEcgFrame({
               type: 'ECG_FRAME',
               deviceId: parsed.deviceId || 'DX-ESP8266-001',

@@ -658,8 +658,8 @@ function handleIncomingTelemetry(frame) {
       }
     }
     // 1. Precise Hardware Signal & Contact State Detection
-    const isFingerOn = Boolean(frame.fingerDetected && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
-    const hasValidEcgSignal = Boolean(!frame.leadsOff && frame.ecgSignalValid && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
+    const isFingerOn = Boolean(frame.fingerDetected);
+    const hasValidEcgSignal = Boolean(!frame.leadsOff && frame.ecgSignalValid);
     const isSignalActive = Boolean(isFingerOn || hasValidEcgSignal);
 
     isHardwareSignalValid = isSignalActive;
@@ -669,10 +669,16 @@ function handleIncomingTelemetry(frame) {
     let spo2Value = null;
 
     if (isFingerOn) {
-      hrValue = Math.round(frame.heartRate);
-      spo2Value = (frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : null;
+      if (frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) {
+        hrValue = Math.round(frame.heartRate);
+      }
+      if (frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) {
+        spo2Value = Math.round(frame.spo2);
+      }
     } else if (hasValidEcgSignal) {
-      hrValue = Math.round(frame.heartRate);
+      if (frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) {
+        hrValue = Math.round(frame.heartRate);
+      }
       spo2Value = null; // ECG electrodes cannot measure blood oxygen!
     } else {
       // Finger is removed: IMMEDIATELY clear to null ("--")
@@ -705,8 +711,8 @@ function handleIncomingTelemetry(frame) {
       }
     }
 
-    const isFingerOn = Boolean(frame.fingerDetected && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220);
-    const hrValue = isFingerOn ? Math.round(frame.heartRate) : null;
+    const isFingerOn = Boolean(frame.fingerDetected);
+    const hrValue = (isFingerOn && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) ? Math.round(frame.heartRate) : null;
     const spo2Value = (isFingerOn && frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : null;
 
     updateVitalsUI(hrValue, spo2Value, isFingerOn ? 'STABLE' : 'WAITING', isRealHardware, frame.deviceId, !isFingerOn, isFingerOn, frame.patientId || 'pat-001');
@@ -856,20 +862,20 @@ function updateVitalsUI(hr, spo2, quality, isRealHardware = false, deviceId = nu
 
   if (liveHr) liveHr.textContent = hrNum ? hrNum : '--';
   if (liveSpo2) liveSpo2.textContent = spo2Num ? spo2Num : '--';
-  if (liveHrCaption) liveHrCaption.textContent = hrNum ? 'Live optical sensor reading' : 'Waiting for sensor';
-  if (liveSpo2Caption) liveSpo2Caption.textContent = spo2Num ? 'Live arterial oxygenation' : 'Waiting for sensor';
+  if (liveHrCaption) liveHrCaption.textContent = hrNum ? 'Live optical sensor reading' : (fingerDetected ? 'Acquiring pulse wave...' : 'Waiting for sensor');
+  if (liveSpo2Caption) liveSpo2Caption.textContent = spo2Num ? 'Live arterial oxygenation' : (fingerDetected ? 'Calculating SpO2...' : 'Waiting for sensor');
 
   if (patHr) patHr.textContent = hrNum ? hrNum : '--';
   const patHrUnit = document.getElementById('patHrUnit');
   if (patHrUnit) patHrUnit.style.display = hrNum ? 'inline' : 'none';
   const patHrCaption = document.getElementById('patHrCaption');
-  if (patHrCaption) patHrCaption.textContent = hrNum ? 'Live optical sensor reading' : 'Waiting for sensor';
+  if (patHrCaption) patHrCaption.textContent = hrNum ? 'Live optical sensor reading' : (fingerDetected ? 'Acquiring pulse wave...' : 'Waiting for sensor');
 
   if (patSpo2) patSpo2.textContent = spo2Num ? spo2Num : '--';
   const patSpo2Unit = document.getElementById('patSpo2Unit');
   if (patSpo2Unit) patSpo2Unit.style.display = spo2Num ? 'inline' : 'none';
   const patSpo2Caption = document.getElementById('patSpo2Caption');
-  if (patSpo2Caption) patSpo2Caption.textContent = spo2Num ? 'Live oxygen saturation' : 'Waiting for sensor';
+  if (patSpo2Caption) patSpo2Caption.textContent = spo2Num ? 'Live oxygen saturation' : (fingerDetected ? 'Calculating SpO2...' : 'Waiting for sensor');
 
   // 3. Synchronize Assigned Patients table row for active patient in real time
   const targetPid = targetPatientId || currentPatientId || 'pat-001';

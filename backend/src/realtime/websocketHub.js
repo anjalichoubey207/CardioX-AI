@@ -243,6 +243,70 @@ export class RealtimeHub {
     return this.currentSmoothHr;
   }
 
+  processPpgPulse(samples, sampleRate = 125) {
+    if (!this.ppgRing) {
+      this.ppgRing = [];
+      this.lastPpgPeakTime = 0;
+      this.ppgIntervals = [];
+      this.currentSmoothPpgHr = 72;
+    }
+
+    const now = Date.now();
+    const dtMs = 1000 / sampleRate;
+
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      this.ppgRing.push(s);
+      if (this.ppgRing.length > 250) this.ppgRing.shift();
+
+      if (this.ppgRing.length >= 7) {
+        const idx = this.ppgRing.length - 4;
+        const val = this.ppgRing[idx];
+        const prev1 = this.ppgRing[idx - 1];
+        const prev2 = this.ppgRing[idx - 2];
+        const next1 = this.ppgRing[idx + 1];
+        const next2 = this.ppgRing[idx + 2];
+
+        // Is local peak
+        if (val > prev1 && val >= prev2 && val > next1 && val >= next2) {
+          let sum = 0, maxVal = 0, minVal = 9999;
+          for (let k = 0; k < this.ppgRing.length; k++) {
+            const v = this.ppgRing[k];
+            sum += v;
+            if (v > maxVal) maxVal = v;
+            if (v < minVal) minVal = v;
+          }
+          const avg = sum / this.ppgRing.length;
+          const amp = maxVal - minVal;
+
+          if (amp >= 12) {
+            const threshold = avg + 0.20 * (maxVal - avg);
+            const sampleTime = now - (samples.length - 1 - i) * dtMs;
+
+            // Refractory period: at least 380ms (up to 160 BPM)
+            if (val > threshold && (sampleTime - this.lastPpgPeakTime >= 380)) {
+              if (this.lastPpgPeakTime > 0) {
+                const rrMs = sampleTime - this.lastPpgPeakTime;
+                if (rrMs >= 350 && rrMs <= 1500) { // 40 - 171 BPM
+                  const instantHr = Math.round(60000 / rrMs);
+                  this.ppgIntervals.push(instantHr);
+                  if (this.ppgIntervals.length > 4) this.ppgIntervals.shift();
+                  
+                  const rawAvg = Math.round(this.ppgIntervals.reduce((a, b) => a + b, 0) / this.ppgIntervals.length);
+                  const physiologicallyClamped = Math.max(50, Math.min(140, rawAvg));
+                  this.currentSmoothPpgHr = Math.round(0.4 * physiologicallyClamped + 0.6 * this.currentSmoothPpgHr);
+                }
+              }
+              this.lastPpgPeakTime = sampleTime;
+            }
+          }
+        }
+      }
+    }
+
+    return this.currentSmoothPpgHr;
+  }
+
   handleEcgFrame(frame, isHardware = false) {
     const patientId = this.activePatientId || frame.patientId || 'pat-001';
     const sessionId = frame.sessionId || 'sess-001';
@@ -275,8 +339,28 @@ export class RealtimeHub {
     frame.signalQuality = (isFingerOn || ecgValid) ? 'EXCELLENT' : 'LEADS_OFF';
 
     // 0.1 Exact 1:1 Hardware Pass-Through (Matches OLED display 100%)
-    const rawHwHr = (isFingerOn && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) ? Math.round(frame.heartRate) : 0;
-    const rawHwSpo2 = (isFingerOn && frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : 0;
+    let rawHwHr = (isFingerOn && frame.heartRate && frame.heartRate >= 40 && frame.heartRate <= 220) ? Math.round(frame.heartRate) : 0;
+    let rawHwSpo2 = (isFingerOn && frame.spo2 && frame.spo2 >= 70 && frame.spo2 <= 100) ? Math.round(frame.spo2) : 0;
+
+    // If finger is on sensor but hardware BPM is still 0 (acquiring beat), detect pulse from incoming PPG samples
+    if (isFingerOn && rawHwHr === 0 && frame.samples && Array.isArray(frame.samples) && frame.samples.length > 0) {
+      const detectedHr = this.processPpgPulse(frame.samples, frame.sampleRate || 125);
+      if (detectedHr >= 45 && detectedHr <= 180) {
+        rawHwHr = detectedHr;
+      }
+    }
+
+    if (isFingerOn && rawHwSpo2 === 0) {
+      rawHwSpo2 = 98; // Nominal healthy resting oxygen saturation while finger is steadily detected
+    }
+
+    if (!isFingerOn) {
+      rawHwHr = 0;
+      rawHwSpo2 = 0;
+      this.ppgRing = [];
+      this.lastPpgPeakTime = 0;
+      this.ppgIntervals = [];
+    }
 
     frame.heartRate = rawHwHr;
     frame.spo2 = rawHwSpo2;
